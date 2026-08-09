@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str | None = None
     OPENROUTER_API_KEY_2: str | None = None
     NVIDIA_API_KEY: str | None = None
+    NVIDIA_API_KEY_1: str | None = None
+    NVIDIA_API_KEY_2: str | None = None
+    NVIDIA_API_KEY_3: str | None = None
     GEMINI_API_KEY: str | None = None
     MISTRAL_API_KEY: str | None = None
     CEBREAS_API_KEY: str | None = None

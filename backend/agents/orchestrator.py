@@ -23,6 +23,7 @@ from .tools.manufacturing_tools import manufacturing_tools_list
 from .tools.scheme_tools import scheme_tools_list
 from .tools.research_tools import research_tools_list
 from .tools.shared_tools import shared_tools_list 
+from .judge import run_judge_agent
 from pydantic import BaseModel,Field
 from langchain_google_genai import ChatGoogleGenerativeAI
 import os
@@ -446,6 +447,30 @@ async def research_node(state: AgentState):
     }
 
 
+async def judge_node(state: AgentState):
+    print("--- JUDGE AGENT (Quality Assurance & Verification) ---")
+    user_query = state.get("user_query", "")
+    planning_res = state.get("planning_result")
+    mfg_res = state.get("manufacturing_result")
+    scheme_res = state.get("scheme_result")
+    research_res = state.get("research_result")
+
+    judge_result = await run_judge_agent(
+        user_query=user_query,
+        planning_result=planning_res,
+        manufacturing_result=mfg_res,
+        scheme_result=scheme_res,
+        research_result=research_res
+    )
+    
+    res_dict = judge_result.model_dump()
+    print(f"   -> Judge Evaluation Status: {judge_result.status} | Mistakes Found: {len(judge_result.mistakes)}")
+    return {
+        "judge_result": res_dict,
+        "messages": [f"Judge Agent evaluated workflow output with status: {judge_result.status}"]
+    }
+
+
 async def finalize_node(state: AgentState):
     print("--- ORCHESTRATOR COMBINING RESPONSES ---")
     final_report = {
@@ -453,20 +478,22 @@ async def finalize_node(state: AgentState):
         "planning": state.get("planning_result"),
         "manufacturing": state.get("manufacturing_result"),
         "schemes": state.get("scheme_result"),
-        "research": state.get("research_result")
+        "research": state.get("research_result"),
+        "judge": state.get("judge_result")
     }
     return {"final_report": final_report, "messages": ["Final report generated."]}
 
 
 # 1. Initialize the Orchestrator Graph
-orchestrator_workflow=StateGraph(AgentState)
+orchestrator_workflow = StateGraph(AgentState)
 
-# 2. Add nodes (The 4 Specialist Agents + Combiner)
+# 2. Add nodes (The 4 Specialist Agents + Judge + Combiner)
 orchestrator_workflow.add_node("router", router_node)
 orchestrator_workflow.add_node("planning", planning_node)
 orchestrator_workflow.add_node("manufacturing", manufacturing_node)
 orchestrator_workflow.add_node("scheme", scheme_node)
 orchestrator_workflow.add_node("research", research_node)
+orchestrator_workflow.add_node("judge", judge_node)
 orchestrator_workflow.add_node("finalize", finalize_node)
 
 
@@ -475,25 +502,19 @@ def route_agents(state: AgentState):
     return state.get("required_agents", ["planning", "manufacturing", "scheme", "research"])
 
 
-
-
-
-
 # 3. Define the routing / workflow
-# According to the architecture image, the Orchestrator splits work across the 4 agents.
-# We run them sequentially here, but LangGraph also supports running them in parallel.
 orchestrator_workflow.set_entry_point("router")
 orchestrator_workflow.add_conditional_edges(
     "router",
     route_agents,
     ["planning", "manufacturing", "scheme", "research"]
 )
-orchestrator_workflow.add_edge("planning", "finalize")
-orchestrator_workflow.add_edge("manufacturing", "finalize")
-orchestrator_workflow.add_edge("scheme", "finalize")
-orchestrator_workflow.add_edge("research", "finalize")
+orchestrator_workflow.add_edge("planning", "judge")
+orchestrator_workflow.add_edge("manufacturing", "judge")
+orchestrator_workflow.add_edge("scheme", "judge")
+orchestrator_workflow.add_edge("research", "judge")
+orchestrator_workflow.add_edge("judge", "finalize")
 orchestrator_workflow.add_edge("finalize", END)
-
 # 4. Compile the Graph
 
 # We don't compile with MemorySaver globally anymore.
@@ -582,7 +603,7 @@ async def run_orchestrator_stream(query: str, thread_id: str = "default_session"
 
     inputs = {"user_query": query, "semantic_context": semantic_context, "messages": []}
     
-    SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research"}
+    SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research", "judge"}
 
     async for event in graph.astream_events(inputs, config=config, version="v2"):
         kind = event["event"]
@@ -642,7 +663,7 @@ async def resume_orchestrator_stream(answer: str, thread_id: str = "default_sess
     config = {"configurable": {"thread_id": thread_id}}
     
     inputs = Command(resume=answer)
-    SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research"}
+    SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research", "judge"}
     
     async for event in graph.astream_events(inputs, config=config, version="v2"):
         kind = event["event"]

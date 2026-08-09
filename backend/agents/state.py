@@ -16,6 +16,7 @@ class AgentState(TypedDict):
     manufacturing_result: dict | None
     scheme_result: dict | None
     research_result: dict | None
+    judge_result: dict | None
 
      # Log of what happened
     messages: Annotated[List[str], operator.add]

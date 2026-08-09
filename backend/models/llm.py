@@ -111,15 +111,46 @@ def get_nvidia_llm(model_name: str = "nvidia/nemotron-3-ultra-550b-a55b", temper
 
 
 def get_nvidia_llm2(model_name: str = "nvidia/nemotron-3-ultra-550b-a55b", temperature: float = 0.2, max_tokens: int = 1500):
-    if settings.NVIDIA_API_KEY:
+    if settings.NVIDIA_API_KEY_1:
         try:
             return ChatNVIDIA(
-                model="deepseek-ai/deepseek-v4-flash",
-                api_key="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",
+                model=model_name,
+                api_key=settings.NVIDIA_API_KEY_1,
                 temperature=temperature,
                 top_p=0.95,
                 max_tokens=max_tokens,
                 extra_body={"chat_template_kwargs":{"thinking":True,"reasoning_effort":"high"}},
+            )
+        except Exception:
+            pass
+    return get_default_LLM(temperature=temperature, max_tokens=max_tokens)
+
+def get_nvidia_2(model_name: str = "nvidia/nemotron-3-super-120b-a12b", temperature: float = 0.2, max_tokens: int = 2000):
+    key = settings.NVIDIA_API_KEY_2 or settings.NVIDIA_API_KEY
+    if key:
+        try:
+            return ChatNVIDIA(
+                api_key=key,
+                model=model_name,
+                temperature=temperature,
+                timeout=30,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            pass
+    return get_default_LLM(temperature=temperature, max_tokens=max_tokens)
+
+
+def get_nvidia_digital_twin_llm(model_name: str = "meta/llama-3.3-70b-instruct", temperature: float = 0.2, max_tokens: int = 2000):
+    key = settings.NVIDIA_API_KEY_3 or settings.NVIDIA_API_KEY_2 or settings.NVIDIA_API_KEY
+    if key:
+        try:
+            return ChatNVIDIA(
+                api_key=key,
+                model=model_name,
+                temperature=temperature,
+                timeout=30,
+                max_tokens=max_tokens,
             )
         except Exception:
             pass

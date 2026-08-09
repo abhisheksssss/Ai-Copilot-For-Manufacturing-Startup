@@ -26,18 +26,58 @@ class MachineModel(BaseModel):
         default="box",
         description="Visual shape: 'box', 'cylinder', 'conveyor'"
     )
+    oee_percent: float = Field(
+        default=85.0,
+        description="Overall equipment effectiveness after speed/minor stoppage losses"
+    )
+    downtime_percent: float = Field(
+        default=5.0,
+        description="Share of planned production time lost to breakdowns and stoppages"
+    )
+    setup_time_min: float = Field(
+        default=20.0,
+        description="Changeover/setup time lost per shift in minutes"
+    )
+    maintenance_hours_per_month: float = Field(
+        default=4.0,
+        description="Planned maintenance hours per month for this machine type"
+    )
 
 
 class ProcessStep(BaseModel):
     name: str = Field(description="Process step name, e.g. 'PCB Assembly'")
     sequence: int = Field(description="Order in production flow, starting from 1")
     machine: MachineModel = Field(description="Machine used in this step")
-    workers_required: int = Field(default=2, description="Workers needed at this station")
+    workers_required: int = Field(default=2, description="Total workers needed at this station")
+    min_operators_per_shift: int = Field(
+        default=1,
+        description="Minimum operators required on each active shift"
+    )
     zone_type: str = Field(
         default="production",
-        description="Zone category: 'warehouse', 'production', 'testing', 'qc', 'packaging', 'dispatch'"
+        description="Zone category: 'warehouse', 'production', 'testing', 'qc', 'packaging', 'dispatch', 'office'"
     )
     area_sqft: float = Field(default=2000.0, description="Floor area required in sq ft")
+    yield_percent: float = Field(
+        default=98.0,
+        description="Good output percentage after this step"
+    )
+    scrap_percent: float = Field(
+        default=2.0,
+        description="Expected scrap generated at this step as a percent of processed units"
+    )
+    buffer_capacity_units: int = Field(
+        default=0,
+        description="WIP buffer capacity available before/after this step"
+    )
+    rework_percent: float = Field(
+        default=0.0,
+        description="Share of units that need rework or retest"
+    )
+    rework_to_step: Optional[int] = Field(
+        default=None,
+        description="Optional sequence number to which rework returns"
+    )
 
 
 class FactoryConfig(BaseModel):
@@ -49,6 +89,18 @@ class FactoryConfig(BaseModel):
     location: str = Field(default="India")
     budget_inr: float = Field(default=10_000_000.0, description="Total budget in INR")
     selling_price_per_unit: float = Field(default=2000.0, description="Selling price in INR")
+    raw_material_cost_ratio: float = Field(
+        default=0.45,
+        description="Raw material cost as a share of selling price"
+    )
+    labour_cost_per_worker_month_inr: float = Field(
+        default=18000.0,
+        description="Average monthly cost per worker"
+    )
+    power_cost_per_kwh_inr: float = Field(
+        default=8.0,
+        description="Industrial power tariff used for estimation"
+    )
     processes: list[ProcessStep] = Field(default_factory=list)
     total_area_sqft: float = Field(default=30000.0)
     warehouse_area_sqft: float = Field(default=8000.0)
@@ -71,16 +123,24 @@ class StepCapacity(BaseModel):
     step_name: str
     sequence: int
     capacity_per_hour: float
+    theoretical_capacity_per_day: float
+    effective_runtime_hours_per_day: float
+    actual_units_processed_per_day: float
+    actual_good_output_per_day: float
+    quality_adjusted_output_per_day: float
     capacity_per_day: float
     capacity_per_month: float
     utilization_percent: float
+    yield_percent: float
+    downtime_percent: float
+    oee_percent: float
     is_bottleneck: bool
     machine_count: int
     workers: int
 
 
 class SimulationResult(BaseModel):
-    effective_throughput_per_day: float = Field(description="Factory output limited by bottleneck")
+    effective_throughput_per_day: float = Field(description="Factory good output per day after losses")
     effective_throughput_per_month: float
     target_met: bool = Field(description="Whether target production is achievable")
     production_gap: float = Field(description="Shortfall vs target (negative = surplus)")
@@ -90,6 +150,10 @@ class SimulationResult(BaseModel):
     total_workers: int
     total_power_kw: float
     estimated_monthly_power_cost_inr: float
+    overall_yield_percent: float = Field(default=100.0)
+    monthly_scrap_units: float = Field(default=0.0)
+    monthly_input_units_required: float = Field(default=0.0)
+    capacity_utilization_percent: float = Field(default=0.0)
     optimization_suggestions: list[str] = Field(default_factory=list)
 
 
@@ -101,20 +165,25 @@ class FinancialSummary(BaseModel):
     total_capex_inr: float
     machine_cost_inr: float
     civil_construction_inr: float
+    misc_infra_inr: float
     working_capital_inr: float
     monthly_opex_inr: float
     labour_cost_monthly_inr: float
     power_cost_monthly_inr: float
     raw_material_cost_monthly_inr: float
+    maintenance_cost_monthly_inr: float
+    inventory_carrying_cost_monthly_inr: float
+    qc_and_scrap_cost_monthly_inr: float
+    depreciation_monthly_inr: float
     monthly_revenue_inr: float
     monthly_profit_inr: float
     gross_margin_percent: float
     break_even_months: float
     annual_roi_percent: float
     # Scenario comparison
-    conservative: dict  # 30% lower production
-    balanced: dict       # target production
-    aggressive: dict     # 150% target production
+    conservative: dict
+    balanced: dict
+    aggressive: dict
 
 
 # ─────────────────────────────────────────────────────────────────────────────

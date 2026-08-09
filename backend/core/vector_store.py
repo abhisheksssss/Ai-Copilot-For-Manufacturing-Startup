@@ -15,7 +15,7 @@ if DATABASE_URL and (DATABASE_URL.startswith("postgresql") or DATABASE_URL.start
                 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
                 embeddings = NVIDIAEmbeddings(
                     model="NV-Embed-QA",
-                    nvidia_api_key=settings.NVIDIA_API_KEY
+                    nvidia_api_key=settings.NVIDIA_API_KEY_2
                 )
                 print("[INFO] Initialized NVIDIA Embeddings for vector store.")
             except Exception as nvidia_err:

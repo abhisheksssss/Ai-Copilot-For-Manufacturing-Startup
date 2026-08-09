@@ -30,6 +30,7 @@ from models.user import User
 from fastapi.responses import StreamingResponse
 from agents.orchestrator import run_orchestrator_stream, resume_orchestrator_stream
 from agents.chatbot import run_chatbot_stream, resume_chatbot_stream
+from digital_twin.agent import run_digital_twin_agent
 
 Base.metadata.create_all(bind=engine)
 
@@ -174,6 +175,11 @@ async def generate_business_plan(
         show_agent(
             "🔍 Research Agent",
             final.get("research", {})
+        )
+
+        show_agent(
+            "⚖️ Judge Agent",
+            final.get("judge", {})
         )
 
         console.print(Rule(style="cyan"))
@@ -337,6 +343,34 @@ async def _stream_what_if(query: str, modification: str):
         yield f"data: {_json.dumps({'type': 'digital_twin_result', 'data': result})}\n\n"
     except Exception as e:
         yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+
+@app.post("/api/digital-twin/generate")
+async def generate_digital_twin(
+    request: DigitalTwinRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    Triggers the Digital Twin Agent and streams the 3D scene & simulation results.
+    """
+    return StreamingResponse(
+        _stream_digital_twin(request.query),
+        media_type="text/event-stream"
+    )
+
+
+@app.post("/api/digital-twin/what-if")
+async def what_if_digital_twin(
+    request: WhatIfRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    Runs a What-If scenario modification on the Digital Twin.
+    """
+    return StreamingResponse(
+        _stream_what_if(request.query, request.modification),
+        media_type="text/event-stream"
+    )
 
 
 
