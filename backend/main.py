@@ -29,7 +29,7 @@ from core.auth import get_current_user_id, require_admin
 from models.user import User
 from fastapi.responses import StreamingResponse
 from agents.orchestrator import run_orchestrator_stream, resume_orchestrator_stream
-
+from agents.chatbot import run_chatbot_stream, resume_chatbot_stream
 
 Base.metadata.create_all(bind=engine)
 
@@ -339,34 +339,6 @@ async def _stream_what_if(query: str, modification: str):
         yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
 
-# @app.post("/api/digital-twin/generate")
-# async def digital_twin_generate(
-#     request: DigitalTwinRequest,
-#     user_id: str = Depends(get_current_user_id),
-# ):
-#     """
-#     Generate an AI Factory Digital Twin from a natural-language query.
-#     Streams SSE progress events, then emits the complete twin JSON.
-#     """
-#     return StreamingResponse(
-#         _stream_digital_twin(request.query),
-#         media_type="text/event-stream",
-#     )
-
-
-# @app.post("/api/digital-twin/what-if")
-# async def digital_twin_what_if(
-#     request: WhatIfRequest,
-#     user_id: str = Depends(get_current_user_id),
-# ):
-#     """
-#     Run a what-if scenario on an existing factory configuration.
-#     Re-runs the full Digital Twin pipeline with the modification applied.
-#     """
-#     return StreamingResponse(
-#         _stream_what_if(request.query, request.modification),
-#         media_type="text/event-stream",
-#     )
 
 
 if __name__ == "__main__":
