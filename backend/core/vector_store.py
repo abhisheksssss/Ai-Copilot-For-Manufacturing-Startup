@@ -1,5 +1,4 @@
 import os
-from langchain_huggingface import HuggingFaceEmbeddings
 from sqlalchemy import create_engine
 from core.config import settings
 
@@ -11,13 +10,22 @@ DATABASE_URL = getattr(settings, "DATABASE_URL", "") or ""
 if DATABASE_URL and (DATABASE_URL.startswith("postgresql") or DATABASE_URL.startswith("postgres")):
     try:
         from langchain_postgres.vectorstores import PGVector
-        try:
-            embeddings = HuggingFaceEmbeddings(
-                model_name="all-MiniLM-L6-v2",
-                model_kwargs={"local_files_only": True}
-            )
-        except Exception:
+        if getattr(settings, "NVIDIA_API_KEY", None):
+            try:
+                from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
+                embeddings = NVIDIAEmbeddings(
+                    model="NV-Embed-QA",
+                    nvidia_api_key=settings.NVIDIA_API_KEY
+                )
+                print("[INFO] Initialized NVIDIA Embeddings for vector store.")
+            except Exception as nvidia_err:
+                print(f"[WARNING] Failed to load NVIDIAEmbeddings: {nvidia_err}. Falling back to HuggingFace.")
+                from langchain_huggingface import HuggingFaceEmbeddings
+                embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        else:
+            from langchain_huggingface import HuggingFaceEmbeddings
             embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
         engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
         vector_store = PGVector(
             embeddings=embeddings,

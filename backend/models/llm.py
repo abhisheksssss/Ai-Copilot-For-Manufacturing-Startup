@@ -94,7 +94,22 @@ def get_gemini_llm(model_name: str = "gemini-2.0-flash", temperature: float = 0.
         except Exception:
             pass
     return get_default_LLM(temperature=temperature, max_tokens=max_tokens)
-    
+
+def get_nvidia_llm(model_name: str = "nvidia/nemotron-3-ultra-550b-a55b", temperature: float = 0.2, max_tokens: int = 1500):
+    if settings.NVIDIA_API_KEY:
+        try:
+            return ChatNVIDIA(
+                api_key=settings.NVIDIA_API_KEY,
+                model=model_name,
+                temperature=temperature,
+                timeout=120,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            pass
+    return get_default_LLM(temperature=temperature, max_tokens=max_tokens)
+
+
 def get_nvidia_llm2(model_name: str = "nvidia/nemotron-3-ultra-550b-a55b", temperature: float = 0.2, max_tokens: int = 1500):
     if settings.NVIDIA_API_KEY:
         try:
