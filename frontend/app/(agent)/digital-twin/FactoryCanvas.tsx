@@ -83,11 +83,11 @@ const BottleneckPulse: FC<{ position: [number, number, number]; size: [number, n
     <mesh ref={ref} position={position}>
       <boxGeometry args={[size[0] + 0.2, size[1] + 0.2, size[2] + 0.2]} />
       <meshStandardMaterial
-        color="#ff2020"
-        emissive="#ff0000"
+        color="#dc2626"
+        emissive="#ef4444"
         emissiveIntensity={1.0}
         transparent
-        opacity={0.15}
+        opacity={0.2}
       />
     </mesh>
   );
@@ -129,10 +129,10 @@ const FactoryZone: FC<{ zone: SceneZone; onZoneClick: (z: SceneZone) => void }> 
         <boxGeometry args={zone.size} />
         <meshStandardMaterial
           color={zone.color}
-          emissive={zone.is_bottleneck ? "#7f1d1d" : zone.color}
+          emissive={zone.is_bottleneck ? "#991b1b" : zone.color}
           emissiveIntensity={zone.is_bottleneck ? 0.4 : 0.1}
-          roughness={0.6}
-          metalness={0.3}
+          roughness={0.4}
+          metalness={0.2}
           transparent
           opacity={hovered ? 0.95 : 0.88}
         />
@@ -143,7 +143,7 @@ const FactoryZone: FC<{ zone: SceneZone; onZoneClick: (z: SceneZone) => void }> 
       {hovered && (
         <mesh position={zone.position}>
           <boxGeometry args={[zone.size[0] + 0.08, zone.size[1] + 0.08, zone.size[2] + 0.08]} />
-          <meshStandardMaterial color="#ffffff" transparent opacity={0.08} wireframe />
+          <meshStandardMaterial color="#0f172a" transparent opacity={0.15} wireframe />
         </mesh>
       )}
     </group>
@@ -171,7 +171,7 @@ const MachineObject: FC<{ machine: SceneMachine }> = ({ machine }) => {
       <meshStandardMaterial
         color={machine.color}
         roughness={0.4}
-        metalness={0.7}
+        metalness={0.6}
         emissive={machine.color}
         emissiveIntensity={0.15}
       />
@@ -196,11 +196,11 @@ const FlowArrow: FC<{ flow: SceneFlow; zones: SceneZone[] }> = ({ flow, zones })
     [endX, y, 0],
   ];
 
-  const color = flow.is_bottleneck_flow ? "#ef4444" : "#6ee7b7";
+  const color = flow.is_bottleneck_flow ? "#dc2626" : "#059669";
 
   return (
     <group>
-      <Line points={points} color={color} lineWidth={2} />
+      <Line points={points} color={color} lineWidth={2.5} />
       <mesh position={[endX + 0.1, y, 0]} rotation={[0, 0, -Math.PI / 2]}>
         <coneGeometry args={[0.2, 0.5, 8]} />
         <meshStandardMaterial color={color} />
@@ -211,21 +211,26 @@ const FlowArrow: FC<{ flow: SceneFlow; zones: SceneZone[] }> = ({ flow, zones })
 
 // ─── Zone Label ───────────────────────────────────────────────────────────────
 
-const ZoneLabel: FC<{ label: SceneLabel }> = ({ label }) => (
-  <Float speed={1.5} rotationIntensity={0} floatIntensity={0.2}>
-    <Text
-      position={label.position}
-      fontSize={label.font_size}
-      color={label.color}
-      anchorX="center"
-      anchorY="middle"
-      maxWidth={8}
-      textAlign="center"
-    >
-      {label.text}
-    </Text>
-  </Float>
-);
+const ZoneLabel: FC<{ label: SceneLabel }> = ({ label }) => {
+  // Ensure label text has strong contrast on light ground
+  const labelColor = label.color === "#ffffff" || label.color === "#f8fafc" ? "#1e293b" : label.color;
+
+  return (
+    <Float speed={1.5} rotationIntensity={0} floatIntensity={0.2}>
+      <Text
+        position={label.position}
+        fontSize={label.font_size}
+        color={labelColor}
+        anchorX="center"
+        anchorY="middle"
+        maxWidth={8}
+        textAlign="center"
+      >
+        {label.text}
+      </Text>
+    </Float>
+  );
+};
 
 // ─── Ground ───────────────────────────────────────────────────────────────────
 
@@ -233,18 +238,18 @@ const FactoryGround: FC<{ width: number; depth: number }> = ({ width, depth }) =
   <>
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.05, 0]}>
       <planeGeometry args={[width * 1.5, depth * 2.5]} />
-      <meshStandardMaterial color="#0f1729" roughness={0.9} metalness={0.1} />
+      <meshStandardMaterial color="#f1f5f9" roughness={0.8} metalness={0.1} />
     </mesh>
     <Grid
       position={[0, 0, 0]}
       args={[width * 1.5, depth * 2.5]}
       cellSize={2}
-      cellThickness={0.3}
-      cellColor="#1e3a5f"
+      cellThickness={0.5}
+      cellColor="#cbd5e1"
       sectionSize={10}
-      sectionThickness={0.8}
-      sectionColor="#2563eb"
-      fadeDistance={80}
+      sectionThickness={1.2}
+      sectionColor="#94a3b8"
+      fadeDistance={90}
       fadeStrength={1}
     />
   </>
@@ -260,12 +265,12 @@ const FactoryScene: FC<{ scene: SceneDescriptor; onZoneClick: (z: SceneZone | nu
 
   return (
     <>
-      <ambientLight intensity={0.4} />
-      <directionalLight position={[20, 30, 20]} intensity={1.2} castShadow />
-      <pointLight position={[-20, 20, -10]} intensity={0.6} color="#60a5fa" />
-      <pointLight position={[20, 10, 20]} intensity={0.4} color="#34d399" />
+      <ambientLight intensity={0.7} />
+      <directionalLight position={[20, 30, 20]} intensity={1.4} castShadow />
+      <pointLight position={[-20, 20, -10]} intensity={0.5} color="#0284c7" />
+      <pointLight position={[20, 10, 20]} intensity={0.4} color="#059669" />
 
-      <Environment preset="night" />
+      <Environment preset="studio" />
 
       <FactoryGround width={scene.factory_width} depth={scene.factory_depth} />
 
@@ -308,8 +313,8 @@ const FactoryCanvas: FC<FactoryCanvasProps> = ({ scene, onZoneClick }) => {
 
   if (!mounted) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-[#0a0f1e]">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
+      <div className="flex h-full w-full items-center justify-center bg-slate-50">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-600 border-t-transparent" />
       </div>
     );
   }
@@ -319,7 +324,7 @@ const FactoryCanvas: FC<FactoryCanvasProps> = ({ scene, onZoneClick }) => {
       shadows
       camera={{ position: scene.camera_position, fov: 45, near: 0.1, far: 500 }}
       gl={{ antialias: true, alpha: false }}
-      style={{ background: "#080d1a", width: "100%", height: "100%" }}
+      style={{ background: "#f8fafc", width: "100%", height: "100%" }}
       onPointerMissed={() => onZoneClick(null)}
     >
       <FactoryScene scene={scene} onZoneClick={onZoneClick} />
@@ -328,3 +333,4 @@ const FactoryCanvas: FC<FactoryCanvasProps> = ({ scene, onZoneClick }) => {
 };
 
 export default FactoryCanvas;
+

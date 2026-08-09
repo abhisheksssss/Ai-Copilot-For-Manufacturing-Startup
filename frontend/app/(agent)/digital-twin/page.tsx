@@ -32,10 +32,10 @@ const FactoryCanvas = dynamic<FactoryCanvasProps>(
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-full w-full items-center justify-center bg-[#0a0f1e]">
+      <div className="flex h-full w-full items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-3">
-          <Loader2 className="h-8 w-8 animate-spin text-cyan-400" />
-          <p className="text-sm text-cyan-400/60">Initializing 3D Engine...</p>
+          <Loader2 className="h-8 w-8 animate-spin text-slate-900" />
+          <p className="text-sm font-semibold text-slate-900">Initializing 3D Engine...</p>
         </div>
       </div>
     ),
@@ -114,30 +114,42 @@ function StatCard({
     <div
       className={`rounded-xl border p-3 transition-all ${
         danger
-          ? "border-red-500/40 bg-red-950/30"
+          ? "border-red-200 bg-red-50/80 shadow-xs"
           : highlight
-          ? "border-cyan-500/40 bg-cyan-950/20"
-          : "border-white/10 bg-white/5"
+          ? "border-slate-300 bg-slate-100/80 shadow-xs"
+          : "border-slate-200 bg-white shadow-xs"
       }`}
     >
       <div className="flex items-center gap-2 mb-1">
         <Icon
           className={`h-3.5 w-3.5 ${
-            danger ? "text-red-400" : highlight ? "text-cyan-400" : "text-slate-400"
+            danger ? "text-red-600" : "text-slate-800"
           }`}
         />
-        <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
+        <span
+          className={`text-[10px] font-medium uppercase tracking-wider ${
+            danger ? "text-red-700" : "text-slate-600"
+          }`}
+        >
           {label}
         </span>
       </div>
       <p
         className={`text-lg font-bold leading-tight ${
-          danger ? "text-red-300" : highlight ? "text-cyan-300" : "text-white"
+          danger ? "text-red-950" : "text-slate-900"
         }`}
       >
         {value}
       </p>
-      {sub && <p className="mt-0.5 text-[10px] text-slate-500">{sub}</p>}
+      {sub && (
+        <p
+          className={`mt-0.5 text-[10px] ${
+            danger ? "text-red-600" : "text-slate-500"
+          }`}
+        >
+          {sub}
+        </p>
+      )}
     </div>
   );
 }
@@ -170,9 +182,7 @@ export default function DigitalTwinPage() {
   const [currentStage, setCurrentStage] = useState<string | null>(null);
   const [twinData, setTwinData] = useState<DigitalTwinData | null>(null);
   const [selectedZone, setSelectedZone] = useState<SceneZone | null>(null);
-  const [showFinancials, setShowFinancials] = useState(false);
   const [whatIfQuery, setWhatIfQuery] = useState("");
-  const [isWhatIf, setIsWhatIf] = useState(false);
   const [activeTab, setActiveTab] = useState<"simulation" | "financial" | "suggestions">(
     "simulation"
   );
@@ -230,26 +240,18 @@ export default function DigitalTwinPage() {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        // ── SSE buffer ──────────────────────────────────────────────────────
-        // The digital_twin_result payload can be 50-100KB. TCP/browser chunking
-        // splits it across many read() calls. We must accumulate into a buffer
-        // and only parse complete "data: ..." lines.
         let sseBuffer = "";
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          // Append new chunk to buffer (stream:true keeps multi-byte chars intact)
           sseBuffer += decoder.decode(value, { stream: true });
 
-          // Split on double-newline (SSE event boundary)
           const parts = sseBuffer.split("\n\n");
-          // Last element may be incomplete — keep it in the buffer
           sseBuffer = parts.pop() ?? "";
 
           for (const part of parts) {
-            // Each part may have multiple "data: ..." lines (rare but valid SSE)
             const lines = part.split("\n");
             for (const line of lines) {
               if (!line.startsWith("data: ")) continue;
@@ -263,13 +265,12 @@ export default function DigitalTwinPage() {
                   toast.error(`Generation error: ${event.message}`);
                 }
               } catch {
-                // Incomplete JSON — part of a larger chunk, safe to ignore
+                // Incomplete JSON — safe to ignore chunk
               }
             }
           }
         }
 
-        // Flush any remaining buffered data after stream ends
         if (sseBuffer.trim()) {
           const lines = sseBuffer.split("\n");
           for (const line of lines) {
@@ -308,7 +309,6 @@ export default function DigitalTwinPage() {
     e.preventDefault();
     if (!whatIfQuery.trim() || !twinData) return;
     generateTwin(twinData.query, whatIfQuery);
-    setIsWhatIf(false);
   };
 
   const fmt = (n: number) => new Intl.NumberFormat("en-IN").format(Math.round(n));
@@ -316,15 +316,15 @@ export default function DigitalTwinPage() {
   const fmtL = (n: number) => `₹${(n / 1e5).toFixed(1)}L`;
 
   return (
-    <div className="flex h-[calc(100vh-56px)] flex-col overflow-hidden bg-[#080d1a] text-white">
+    <div className="flex h-[calc(100vh-56px)] flex-col overflow-hidden bg-white text-slate-900">
       {/* ── Header ── */}
-      <div className="flex shrink-0 items-center justify-between border-b border-white/10 bg-[#080d1a]/80 px-5 py-3 backdrop-blur">
+      <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white/90 px-5 py-3 backdrop-blur">
         <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900 text-white shadow-xs">
             <Factory className="h-4 w-4 text-white" />
           </div>
           <div>
-            <h1 className="text-sm font-bold tracking-tight text-white">
+            <h1 className="text-sm font-bold tracking-tight text-slate-900">
               AI Factory Digital Twin
             </h1>
             <p className="text-[10px] text-slate-500">
@@ -335,7 +335,7 @@ export default function DigitalTwinPage() {
         {twinData && (
           <button
             onClick={() => generateTwin(query)}
-            className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/10 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-900 hover:bg-slate-900 hover:text-white transition-all shadow-xs"
           >
             <RefreshCw className="h-3 w-3" />
             Regenerate
@@ -346,10 +346,10 @@ export default function DigitalTwinPage() {
       {/* ── Main Layout ── */}
       <div className="flex flex-1 overflow-hidden">
         {/* ── Left Panel: Query + Sidebar ── */}
-        <div className="flex w-[340px] shrink-0 flex-col border-r border-white/10 overflow-hidden">
+        <div className="flex w-[340px] shrink-0 flex-col border-r border-slate-200 bg-slate-50/50 overflow-hidden">
           {/* Query Input */}
-          <div className="border-b border-white/10 p-4">
-            <form onSubmit={handleSubmit} className="space-y-2">
+          <div className="border-b border-slate-200 p-4">
+            <form onSubmit={handleSubmit} className="space-y-2.5">
               <textarea
                 ref={textareaRef}
                 value={query}
@@ -359,21 +359,21 @@ export default function DigitalTwinPage() {
                 }}
                 placeholder="Describe your factory... e.g. I want to manufacture 50,000 EV chargers/month in Gujarat with ₹10 crore budget"
                 rows={4}
-                className="w-full resize-none rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-slate-200 placeholder-slate-500 focus:border-cyan-500/50 focus:outline-none focus:ring-1 focus:ring-cyan-500/30 transition-all"
+                className="w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-800 placeholder-slate-400 focus:border-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/10 shadow-xs transition-all"
               />
               <button
                 type="submit"
                 disabled={isGenerating || !query.trim()}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-900/30 hover:from-cyan-500 hover:to-blue-500 disabled:cursor-not-allowed disabled:opacity-50 transition-all"
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-md hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 transition-all"
               >
                 {isGenerating ? (
                   <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader2 className="h-4 w-4 animate-spin text-white" />
                     Generating Twin...
                   </>
                 ) : (
                   <>
-                    <Send className="h-4 w-4" />
+                    <Send className="h-4 w-4 text-white" />
                     Generate Digital Twin
                   </>
                 )}
@@ -382,8 +382,8 @@ export default function DigitalTwinPage() {
 
             {/* Example queries */}
             {!twinData && !isGenerating && (
-              <div className="mt-3 space-y-1.5">
-                <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
+              <div className="mt-3.5 space-y-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                   Try an example
                 </p>
                 {EXAMPLE_QUERIES.map((q, i) => (
@@ -393,7 +393,7 @@ export default function DigitalTwinPage() {
                       setQuery(q);
                       generateTwin(q);
                     }}
-                    className="w-full rounded-lg border border-white/5 bg-white/3 px-3 py-2 text-left text-[10px] text-slate-400 hover:border-cyan-500/30 hover:bg-cyan-950/20 hover:text-slate-300 transition-all"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left text-[10px] text-slate-700 hover:border-slate-400 hover:bg-slate-100 hover:text-slate-900 shadow-2xs transition-all"
                   >
                     {q}
                   </button>
@@ -404,8 +404,8 @@ export default function DigitalTwinPage() {
 
           {/* Generation Progress */}
           {isGenerating && (
-            <div className="border-b border-white/10 p-4 space-y-2">
-              <p className="text-[10px] font-medium uppercase tracking-wider text-slate-500">
+            <div className="border-b border-slate-200 p-4 space-y-2 bg-white">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
                 Generating...
               </p>
               {STAGES.map((stage) => {
@@ -416,10 +416,10 @@ export default function DigitalTwinPage() {
                     <div
                       className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] transition-all ${
                         isDone
-                          ? "bg-cyan-500"
+                          ? "bg-slate-900 text-white"
                           : isActive
-                          ? "bg-blue-600 ring-2 ring-blue-400/30"
-                          : "border border-white/10 bg-white/5"
+                          ? "bg-slate-900 ring-2 ring-slate-400/30 text-white"
+                          : "border border-slate-200 bg-slate-100"
                       }`}
                     >
                       {isDone ? (
@@ -427,16 +427,16 @@ export default function DigitalTwinPage() {
                       ) : isActive ? (
                         <Loader2 className="h-2.5 w-2.5 animate-spin text-white" />
                       ) : (
-                        <span className="text-slate-500">{stage.icon}</span>
+                        <span className="text-slate-400">{stage.icon}</span>
                       )}
                     </div>
                     <span
                       className={`text-xs ${
                         isDone
-                          ? "text-cyan-400"
+                          ? "text-slate-900 font-semibold"
                           : isActive
-                          ? "text-white"
-                          : "text-slate-600"
+                          ? "text-slate-900 font-bold"
+                          : "text-slate-400"
                       }`}
                     >
                       {stage.label}
@@ -451,15 +451,15 @@ export default function DigitalTwinPage() {
           {twinData && !isGenerating && (
             <div className="flex-1 overflow-y-auto p-3 space-y-3">
               {/* Tab switcher */}
-              <div className="flex gap-1 rounded-lg bg-white/5 p-1">
+              <div className="flex gap-1 rounded-lg bg-slate-200/80 p-1">
                 {(["simulation", "financial", "suggestions"] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
                     className={`flex-1 rounded-md py-1 text-[10px] font-medium capitalize transition-all ${
                       activeTab === tab
-                        ? "bg-cyan-600 text-white"
-                        : "text-slate-500 hover:text-slate-300"
+                        ? "bg-slate-900 text-white shadow-xs font-semibold"
+                        : "text-slate-600 hover:text-slate-900"
                     }`}
                   >
                     {tab === "simulation" ? "Sim" : tab === "financial" ? "Finance" : "Tips"}
@@ -498,8 +498,8 @@ export default function DigitalTwinPage() {
                   />
 
                   {/* Machine utilization bars */}
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2 shadow-xs">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                       Machine Utilization
                     </p>
                     {twinData.simulation.step_capacities.map((sc) => (
@@ -507,7 +507,7 @@ export default function DigitalTwinPage() {
                         <div className="flex items-center justify-between">
                           <span
                             className={`text-[10px] ${
-                              sc.is_bottleneck ? "text-red-400 font-semibold" : "text-slate-400"
+                              sc.is_bottleneck ? "text-red-600 font-semibold" : "text-slate-700"
                             }`}
                           >
                             {sc.step_name} {sc.is_bottleneck && "⚠"}
@@ -516,14 +516,14 @@ export default function DigitalTwinPage() {
                             {sc.utilization_percent.toFixed(0)}%
                           </span>
                         </div>
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
                           <div
                             className={`h-full rounded-full transition-all duration-700 ${
                               sc.is_bottleneck
                                 ? "bg-red-500"
                                 : sc.utilization_percent > 80
-                                ? "bg-amber-500"
-                                : "bg-cyan-500"
+                                ? "bg-slate-700"
+                                : "bg-slate-900"
                             }`}
                             style={{ width: `${Math.min(sc.utilization_percent, 100)}%` }}
                           />
@@ -564,8 +564,8 @@ export default function DigitalTwinPage() {
                   />
 
                   {/* Scenario comparison */}
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2 shadow-xs">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                       Scenario Comparison
                     </p>
                     {[
@@ -575,21 +575,21 @@ export default function DigitalTwinPage() {
                     ].map((s: Record<string, unknown>) => (
                       <div
                         key={s.label as string}
-                        className="flex items-center justify-between rounded-lg border border-white/5 bg-white/3 px-2.5 py-2"
+                        className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2"
                       >
-                        <span className="text-[10px] font-medium text-slate-300">
+                        <span className="text-[10px] font-medium text-slate-800">
                           {(s.label as string).split(" ")[0]}
                         </span>
                         <div className="flex gap-3 text-right">
                           <div>
-                            <p className="text-[9px] text-slate-500">ROI</p>
-                            <p className="text-[10px] font-semibold text-cyan-400">
+                            <p className="text-[9px] text-slate-400">ROI</p>
+                            <p className="text-[10px] font-semibold text-slate-900">
                               {(s.annual_roi_percent as number).toFixed(0)}%
                             </p>
                           </div>
                           <div>
-                            <p className="text-[9px] text-slate-500">B/E</p>
-                            <p className="text-[10px] font-semibold text-slate-300">
+                            <p className="text-[9px] text-slate-400">B/E</p>
+                            <p className="text-[10px] font-semibold text-slate-700">
                               {(s.break_even_months as number).toFixed(0)}mo
                             </p>
                           </div>
@@ -603,30 +603,30 @@ export default function DigitalTwinPage() {
               {/* SUGGESTIONS TAB */}
               {activeTab === "suggestions" && (
                 <div className="space-y-2">
-                  <p className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                     AI Optimization Suggestions
                   </p>
                   {twinData.simulation.optimization_suggestions.map((sug, i) => (
                     <div
                       key={i}
-                      className="rounded-xl border border-white/10 bg-white/5 p-3 text-[11px] text-slate-300 leading-relaxed"
+                      className="rounded-xl border border-slate-200 bg-white p-3 text-[11px] text-slate-700 leading-relaxed shadow-xs"
                     >
                       {sug}
                     </div>
                   ))}
                   {/* Summary */}
-                  <div className="rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-3">
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-cyan-400 mb-2">
+                  <div className="rounded-xl border border-slate-300 bg-slate-100/90 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-900 mb-1.5">
                       Expert Summary
                     </p>
-                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                    <p className="text-[11px] text-slate-800 leading-relaxed">
                       {twinData.summary_text}
                     </p>
                   </div>
 
                   {/* What-if */}
-                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
-                    <p className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
+                  <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2 shadow-xs">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                       What-If Simulator
                     </p>
                     <form onSubmit={handleWhatIf} className="space-y-2">
@@ -635,14 +635,14 @@ export default function DigitalTwinPage() {
                         value={whatIfQuery}
                         onChange={(e) => setWhatIfQuery(e.target.value)}
                         placeholder="e.g. increase production to 100k/month"
-                        className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-slate-200 placeholder-slate-600 focus:border-cyan-500/50 focus:outline-none"
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-800 placeholder-slate-400 focus:border-slate-900 focus:outline-none"
                       />
                       <button
                         type="submit"
                         disabled={isGenerating || !whatIfQuery.trim()}
-                        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-blue-700 px-3 py-2 text-[11px] font-semibold text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-[11px] font-semibold text-white hover:bg-slate-800 disabled:opacity-50 transition-colors"
                       >
-                        <RefreshCw className="h-3 w-3" />
+                        <RefreshCw className="h-3 w-3 text-white" />
                         Simulate What-If
                       </button>
                     </form>
@@ -654,17 +654,17 @@ export default function DigitalTwinPage() {
         </div>
 
         {/* ── 3D Canvas Area ── */}
-        <div className="relative flex-1 overflow-hidden bg-[#0a0f1e]">
+        <div className="relative flex-1 overflow-hidden bg-slate-50">
           {!twinData && !isGenerating && (
             <div className="flex h-full w-full flex-col items-center justify-center gap-6 text-center">
               <div className="relative">
-                <div className="absolute inset-0 rounded-full bg-cyan-500/10 blur-3xl" />
-                <div className="relative flex h-24 w-24 items-center justify-center rounded-2xl border border-white/10 bg-white/5">
-                  <Factory className="h-12 w-12 text-cyan-400/60" />
+                <div className="absolute inset-0 rounded-full bg-slate-200/50 blur-3xl" />
+                <div className="relative flex h-24 w-24 items-center justify-center rounded-2xl border border-slate-300 bg-slate-900 shadow-md">
+                  <Factory className="h-12 w-12 text-white" />
                 </div>
               </div>
               <div className="max-w-sm space-y-2">
-                <h2 className="text-xl font-bold text-white">
+                <h2 className="text-xl font-bold text-slate-900">
                   Build Your Factory Twin
                 </h2>
                 <p className="text-sm text-slate-500">
@@ -680,10 +680,10 @@ export default function DigitalTwinPage() {
                 ].map((f) => (
                   <div
                     key={f.label}
-                    className="rounded-xl border border-white/10 bg-white/5 p-3"
+                    className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs"
                   >
                     <div className="text-2xl mb-1">{f.icon}</div>
-                    <p className="text-[10px] text-slate-400">{f.label}</p>
+                    <p className="text-[10px] font-medium text-slate-700">{f.label}</p>
                   </div>
                 ))}
               </div>
@@ -693,15 +693,15 @@ export default function DigitalTwinPage() {
           {isGenerating && !twinData && (
             <div className="flex h-full w-full flex-col items-center justify-center gap-4">
               <div className="relative h-32 w-32">
-                <div className="absolute inset-0 animate-ping rounded-full bg-cyan-500/20" />
-                <div className="absolute inset-4 animate-spin rounded-full border-2 border-transparent border-t-cyan-500" />
-                <div className="absolute inset-8 animate-pulse rounded-full bg-cyan-600/30" />
-                <Factory className="absolute inset-0 m-auto h-10 w-10 text-cyan-400" />
+                <div className="absolute inset-0 animate-ping rounded-full bg-slate-300/30" />
+                <div className="absolute inset-4 animate-spin rounded-full border-2 border-transparent border-t-slate-900" />
+                <div className="absolute inset-8 animate-pulse rounded-full bg-slate-200/50" />
+                <Factory className="absolute inset-0 m-auto h-10 w-10 text-slate-900" />
               </div>
               <div className="text-center">
-                <p className="font-semibold text-white">Generating Your Factory Twin</p>
+                <p className="font-semibold text-slate-900">Generating Your Factory Twin</p>
                 <p className="text-sm text-slate-500 mt-1">
-                  NVIDIA AI is simulating your factory...
+                  AI is simulating your factory...
                 </p>
               </div>
             </div>
@@ -715,28 +715,28 @@ export default function DigitalTwinPage() {
               />
 
               {/* Controls hint */}
-              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-black/60 px-4 py-1.5 text-[10px] text-slate-400 backdrop-blur-sm pointer-events-none">
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-slate-200 bg-white/90 px-4 py-1.5 text-[10px] font-medium text-slate-600 shadow-sm backdrop-blur-sm pointer-events-none">
                 🖱 Drag to rotate · Scroll to zoom · Right-drag to pan
               </div>
 
               {/* Zone info panel on click */}
               {selectedZone && (
-                <div className="absolute right-4 top-4 w-64 rounded-2xl border border-white/10 bg-black/80 p-4 backdrop-blur-lg">
+                <div className="absolute right-4 top-4 w-64 rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-xl backdrop-blur-md">
                   <div className="flex items-start justify-between mb-3">
-                    <h3 className="text-sm font-bold text-white leading-tight">
+                    <h3 className="text-sm font-bold text-slate-900 leading-tight">
                       {selectedZone.name}
                     </h3>
                     <button
                       onClick={() => setSelectedZone(null)}
-                      className="text-slate-500 hover:text-white"
+                      className="text-slate-400 hover:text-slate-700"
                     >
                       ✕
                     </button>
                   </div>
                   {selectedZone.is_bottleneck && (
-                    <div className="mb-3 flex items-center gap-1.5 rounded-lg bg-red-950/60 px-2.5 py-1.5">
-                      <AlertTriangle className="h-3 w-3 text-red-400" />
-                      <span className="text-[10px] font-semibold text-red-300">
+                    <div className="mb-3 flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
+                      <AlertTriangle className="h-3.5 w-3.5 text-red-600" />
+                      <span className="text-[10px] font-semibold text-red-700">
                         BOTTLENECK DETECTED
                       </span>
                     </div>
@@ -747,13 +747,13 @@ export default function DigitalTwinPage() {
                         <span className="text-[10px] capitalize text-slate-500">
                           {k.replace(/_/g, " ")}
                         </span>
-                        <span className="text-[10px] font-medium text-slate-300">
+                        <span className="text-[10px] font-medium text-slate-800">
                           {String(v)}
                         </span>
                       </div>
                     ))}
                     {selectedZone.metadata.description != null && (
-                      <p className="mt-2 text-[10px] text-slate-400 leading-relaxed border-t border-white/10 pt-2">
+                      <p className="mt-2 text-[10px] text-slate-600 leading-relaxed border-t border-slate-200 pt-2">
                         {String(selectedZone.metadata.description)}
                       </p>
                     )}
@@ -767,3 +767,4 @@ export default function DigitalTwinPage() {
     </div>
   );
 }
+
