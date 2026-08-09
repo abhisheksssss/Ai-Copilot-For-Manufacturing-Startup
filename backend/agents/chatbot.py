@@ -1,12 +1,92 @@
 import json
+import re
 from typing import AsyncGenerator
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import tool
 
-from models.llm import get_default_LLM, get_fallback_llm,get_nvidia_llm2
+from models.llm import get_default_LLM, get_fallback_llm, get_nvidia_llm2
 from .state import AgentState
+
+# ==========================================
+# GUARDRAIL PATTERNS & VALIDATION
+# ==========================================
+
+_CODE_GEN_PATTERNS = [
+    r"\b(generate|genrate|write|create|build|make|give|develop|provide|debug|fix)\s+.*(python|javascript|typescript|java|c\+\+|cpp|c#|golang|rust|html|css|sql|bash|shell|php|ruby|swift|kotlin)\b",
+    r"\b(python|javascript|typescript|java|c\+\+|cpp|c#|golang|rust|html|css|sql|bash|shell|php)\s+(code|script|program|func)\b",
+    r"\b(python|javascript|typescript|java|c\+\+|cpp|c#|golang|rust|bash|shell)\s+(script|program|function|class|method|snippet|algorithm)\b",
+    r"\b(write|generate|genrate|create|debug|fix)\s+.*(code|script|program|function|algorithm)\b",
+    r"\b(write|generate|genrate|create)\s+a?\s*(script|program|function|algorithm|app|web\s*app)\b",
+    r"\b(how\s+to\s+code|coding\s+in|code\s+in|code\s+for|pseudo\s*code|pseudocode)\b",
+    r"\b(leetcode|hackerrank|codeforces|fibonacci|bubble\s*sort|binary\s*search)\b",
+    r"```(python|javascript|typescript|java|cpp|c\+\+|html|css|sql|sh|bash|json|xml)?",
+    r"\b(function\s+\w+\s*\(|def\s+\w+\s*\(|class\s+\w+\s*[:{]|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|import\s+\w+|console\.log|print\()",
+    r"\b(looks?\s+like\s+code|syntax|pseudocode)\b",
+]
+
+_PROMPT_INJECTION_PATTERNS = [
+    r"ignore\s+(all\s+)?(previous\s+)?instructions",
+    r"disregard\s+(all\s+)?(previous\s+)?instructions",
+    r"you\s+are\s+now\s+dan",
+    r"act\s+as\s+an?\s+unrestricted",
+    r"override\s+(your\s+)?system\s+prompt",
+    r"reveal\s+(your\s+)?system\s+prompt",
+]
+
+_OFF_TOPIC_PATTERNS = [
+    r"\b(write|tell)\s+(me\s+)?(a\s+)?(story|poem|song|joke|essay|rhyme|novel)\b",
+    r"\b(recipe\s+for|how\s+to\s+cook|baking|kitchen\s+recipe)\b",
+    r"\b(solve\s+this\s+math|solve\s+calculus|solve\s+algebra|derivative\s+of|integral\s+of)\b",
+    r"\b(who\s+won\s+the\s+world\s+cup|movie\s+review|horoscope|astrology)\b",
+]
+
+
+def check_guardrail(query: str) -> tuple[bool, str | None]:
+    """
+    Evaluates whether the user query violates guardrails (e.g., code generation, off-topic, jailbreak).
+
+    Returns:
+        (is_blocked, refusal_message)
+    """
+    cleaned_query = query.strip().lower()
+
+    # 1. Prompt Injection Check
+    for pattern in _PROMPT_INJECTION_PATTERNS:
+        if re.search(pattern, cleaned_query):
+            return True, (
+                "⚠️ **Security Guardrail Triggered**\n\n"
+                "I am an AI Manufacturing Copilot. I cannot process prompt manipulation or system override requests. "
+                "Please ask questions related to manufacturing, factory planning, machinery, CAPEX/OPEX, or government schemes."
+            )
+
+    # 2. Code Generation & Software Development Check
+    for pattern in _CODE_GEN_PATTERNS:
+        if re.search(pattern, cleaned_query):
+            return True, (
+                "🚫 **Query Outside Scope (Code Generation)**\n\n"
+                "I am your **AI Manufacturing Copilot**, specialized in:\n"
+                "- 🏭 **Manufacturing & Equipment**: Machine selection, factory layout, BOM, raw materials\n"
+                "- 📊 **Financial & Business Planning**: CAPEX/OPEX estimation, break-even analysis, financial roadmaps\n"
+                "- 🏛️ **Government Subsidies**: PLI schemes, MSME benefits, loan schemes\n"
+                "- 📈 **Market Research**: Industry analysis, competitor benchmarking, vendor recommendations\n\n"
+                "I cannot generate programming code (e.g., Python, JavaScript, C++) or perform software development tasks. "
+                "Please let me know how I can assist with your manufacturing project or industrial startup!"
+            )
+
+    # 3. Off-topic Queries Check
+    for pattern in _OFF_TOPIC_PATTERNS:
+        if re.search(pattern, cleaned_query):
+            return True, (
+                "🚫 **Query Outside Scope**\n\n"
+                "I am your **AI Manufacturing Copilot**, focused exclusively on manufacturing, industrial startup planning, factory setup, equipment requirements, CAPEX/OPEX analysis, and government schemes.\n\n"
+                "I cannot answer questions about general creative writing, recipes, academic homework, or general entertainment. "
+                "Please ask a query related to manufacturing or business planning!"
+            )
+
+    return False, None
+
 
 # ==========================================
 # PENDING SESSION STORE
@@ -98,6 +178,15 @@ async def chatbot_node(state: AgentState):
     print("--- CHATBOT AGENT (Conversing & Delegating) ---")
     query = state.get("user_query", "")
 
+    # GUARDRAIL CHECK
+    is_blocked, refusal_msg = check_guardrail(query)
+    if is_blocked and refusal_msg:
+        print(f"--- CHATBOT: Guardrail triggered for query: '{query}' ---")
+        return {
+            "final_report": {"chatbot_response": refusal_msg},
+            "messages": [f"Chatbot: {refusal_msg}"]
+        }
+
     try:
         llm = get_nvidia_llm2()
     except Exception:
@@ -128,6 +217,14 @@ async def run_chatbot_stream(query: str, thread_id: str = "default") -> AsyncGen
     _pending_sessions.pop(thread_id, None)
     print(f"\n=== CHATBOT STREAM: '{query}' (thread: {thread_id}) ===")
 
+    # GUARDRAIL CHECK
+    is_blocked, refusal_msg = check_guardrail(query)
+    if is_blocked and refusal_msg:
+        print(f"  [GUARDRAIL TRIGGERED]: {query}")
+        yield f"data: {json.dumps({'type': 'message_chunk', 'content': refusal_msg})}\n\n"
+        yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': {'chatbot_response': refusal_msg}}})}\n\n"
+        return
+
     try:
         llm = get_default_LLM()
     except Exception:
@@ -142,6 +239,14 @@ async def run_chatbot_stream(query: str, thread_id: str = "default") -> AsyncGen
 
 async def resume_chatbot_stream(answer: str, thread_id: str = "default") -> AsyncGenerator[str, None]:
     print(f"\n=== CHATBOT RESUME: answer='{answer}' (thread: {thread_id}) ===")
+
+    # GUARDRAIL CHECK ON ANSWER
+    is_blocked, refusal_msg = check_guardrail(answer)
+    if is_blocked and refusal_msg:
+        print(f"  [GUARDRAIL TRIGGERED ON RESUME]: {answer}")
+        yield f"data: {json.dumps({'type': 'message_chunk', 'content': refusal_msg})}\n\n"
+        yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': {'chatbot_response': refusal_msg}}})}\n\n"
+        return
 
     session = _pending_sessions.pop(thread_id, None)
     prior_count = session.get("clarification_count", 1) if session else 1
@@ -315,7 +420,12 @@ def _build_system_prompt(query: str, allow_clarification: bool = True) -> System
             "6. You MAY call multiple tools if the query spans multiple topics.\n"
             "7. Pass the user's EXACT query to each tool.\n"
             "8. Format your final response clearly in Markdown.\n"
-            "9. STRICT SCOPE: Only answer questions related to manufacturing, factories, startups, and business planning. If the user asks about unrelated topics, politely decline to answer."
+            "9. STRICT SCOPE & GUARDRAILS:\n"
+            "   - You are exclusively an AI Manufacturing Copilot.\n"
+            "   - ONLY answer questions related to manufacturing, factory planning, machinery selection, industrial business roadmaps, CAPEX/OPEX estimation, government subsidies/schemes, and market research.\n"
+            "   - ABSOLUTELY REFUSE any requests to write, generate, debug, or explain programming code (e.g., Python, JavaScript, C++, Java, HTML, SQL, etc.).\n"
+            "   - ABSOLUTELY REFUSE any requests for creative writing, general trivia, homework, recipes, stories, or off-topic general AI queries.\n"
+            "   - Do NOT invoke any tools if the query is out of scope or asks for code generation. Directly respond with a polite refusal stating your scope as an AI Manufacturing Copilot."
         )
     )
 
