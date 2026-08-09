@@ -38,7 +38,7 @@ HEADERS = {
 ddg = DuckDuckGoSearchResults()
 
 
-def ddg_search(query: str, max_results: int = 3) -> list[dict]:
+def ddg_search(query: str, max_results: int = 6) -> list[dict]:
     """
     Runs a DuckDuckGo search and returns structured list of compact results.
 
@@ -53,8 +53,8 @@ def ddg_search(query: str, max_results: int = 3) -> list[dict]:
         results = []
         for snippet, title, url in entries[:max_results]:
             results.append({
-                "title"  : title.strip()[:60],
-                "snippet": snippet.strip()[:90],
+                "title"  : title.strip()[:80],
+                "snippet": snippet.strip()[:200],
                 "url"    : url.strip(),
                 "domain" : urlparse(url.strip()).netloc,
             })
@@ -64,7 +64,7 @@ def ddg_search(query: str, max_results: int = 3) -> list[dict]:
         return []
 
 
-def scrape_url(url: str, char_limit: int = 350) -> dict:
+def scrape_url(url: str, char_limit: int = 600) -> dict:
     """
     Scrapes a URL and returns title + cleaned text content.
     Returns empty dict on failure.
@@ -85,7 +85,7 @@ def scrape_url(url: str, char_limit: int = 350) -> dict:
         text = re.sub(r'\s+', ' ', text).strip()
 
         return {
-            "title"        : title[:80],
+            "title"        : title[:100],
             "url"          : url,
             "domain"       : urlparse(url).netloc,
             "is_government": any(d in url for d in [".gov.in", "msme.gov", "pib.gov"]),
@@ -98,8 +98,8 @@ def scrape_url(url: str, char_limit: int = 350) -> dict:
 
 def search_and_scrape(
     queries: list[str],
-    max_results_per_query: int = 3,
-    max_scrape: int = 2
+    max_results_per_query: int = 6,
+    max_scrape: int = 4
 ) -> dict:
     """
     Runs multiple DDG queries, deduplicates URLs,
@@ -123,7 +123,7 @@ def search_and_scrape(
             scraped.append(page)
 
     return {
-        "search_results": all_results[:4],
+        "search_results": all_results[:8],
         "scraped_pages" : scraped,
     }
 
@@ -267,8 +267,10 @@ def supplier_search(
 
     for item in raw_candidates:
         url = item.get("url", "").strip().lower()
-        title = item.get("title", "").strip().lower()
-        norm_name = re.sub(r'[^a-z0-9]', '', title[:30])
+        title_text = item.get("title", "").strip().lower()
+        snippet_text = item.get("snippet", "").strip().lower()
+        full_text = f"{title_text} {snippet_text}"
+        norm_name = re.sub(r'[^a-z0-9]', '', title_text[:30])
 
         if url in seen_urls or (norm_name and norm_name in seen_names):
             continue
@@ -296,23 +298,56 @@ def supplier_search(
 
         found_loc = locations[0] if locations else ("India" if not target_location else target_location)
 
-        # Step 7: Location-Weighted Proximity Ranking
-        score = 50
+        # 1. Product Relevance & Machinery Intent Verification
+        product_terms = [t for t in product_query.lower().split() if len(t) > 2 and t not in ["for", "in", "and", "the", "a", "an", "with", "factory", "plant", "unit", "manufacturing", "supplier", "suppliers"]]
         
+        product_matches = sum(1 for term in product_terms if term in full_text)
+        has_product_relevance = (product_matches > 0) or (product_query.lower() in full_text)
+
+        supplier_intent_keywords = [
+            "supplier", "manufacturer", "machinery", "equipment", "plant", "processing",
+            "technologists", "technologies", "engineering", "tank", "assembler", "dealer",
+            "trader", "exporter", "fab", "fabricator", "chiller", "separator", "pasteurizer",
+            "homogenizer", "turnkey", "dairy", "lines", "system"
+        ]
+        has_supplier_intent = any(k in full_text for k in supplier_intent_keywords)
+
+        is_generic_portal_page = any(p in full_text or p in title_text for p in [
+            "msme ramp", "ramp portal", "ministry of msme", "pib.gov", "scheme portal",
+            "welcome | msme", "government scheme", "transformative role", "economic growth"
+        ]) and not (has_supplier_intent and has_product_relevance)
+
+        # Step 7: Location & Relevance Weighted Ranking
+        score = 50
+
+        # Product Relevance Score
+        if has_product_relevance:
+            score += 35
+        else:
+            score -= 25  # Penalize missing product match
+
+        if has_supplier_intent:
+            score += 25
+        else:
+            score -= 20  # Penalize non-supplier pages
+
+        if is_generic_portal_page:
+            score -= 60  # Heavily penalize generic non-supplier portal homepages
+
         # Proximity score
         if target_location:
-            if target_location.lower() in snippet.lower() or target_location.lower() in found_loc.lower():
+            if target_location.lower() in title_text or target_location.lower() in snippet_text or target_location.lower() in found_loc.lower():
                 score += 40  # Exact target location match
-            elif any(n.lower() in snippet.lower() or n.lower() in found_loc.lower() for n in neighbors):
+            elif any(n.lower() in snippet_text or n.lower() in found_loc.lower() for n in neighbors):
                 score += 20  # Neighboring state match
             else:
                 score += 5
 
         # Platform credibility score
-        if is_gov:
+        if is_gov and not is_generic_portal_page:
             score += 30
         elif is_indiamart or is_tradeindia:
-            score += 20
+            score += 25
 
         if prices:
             score += 15

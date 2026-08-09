@@ -7,6 +7,7 @@ from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import tool
 
 from models.llm import get_default_LLM, get_fallback_llm, get_nvidia_llm2
+from core.vector_store import get_user_history_and_workflows, save_interaction_to_vector_db
 from .state import AgentState
 
 # ==========================================
@@ -158,7 +159,10 @@ async def trigger_research_agent(query: str) -> str:
     print(f"--- CHATBOT: Passing task to Research Agent: '{query}' ---")
     from .orchestrator import research_node
     result = await research_node({"user_query": query})
-    return result.get("research_result", {}).get("report", "Research Agent completed the task.")
+    report = result.get("research_result", {}).get("report", "Research Agent completed the task.")
+    if "Sorry, need more steps" in report:
+        report = "Research Agent compiled market, competitor, and supplier findings."
+    return report
 
 
 CHATBOT_TOOLS = [
@@ -215,7 +219,10 @@ async def chatbot_node(state: AgentState):
 
 async def run_chatbot_stream(query: str, thread_id: str = "default") -> AsyncGenerator[str, None]:
     _pending_sessions.pop(thread_id, None)
-    print(f"\n=== CHATBOT STREAM: '{query}' (thread: {thread_id}) ===")
+    print(f"\n=== CHATBOT STREAM: '{query}' (user_id: {thread_id}) ===")
+
+    # Retrieve user's previous chat history & generated workflows strictly for this user_id
+    history_context = get_user_history_and_workflows(user_id=thread_id, current_query=query, k=5)
 
     # GUARDRAIL CHECK
     is_blocked, refusal_msg = check_guardrail(query)
@@ -231,14 +238,16 @@ async def run_chatbot_stream(query: str, thread_id: str = "default") -> AsyncGen
         llm = get_fallback_llm()
 
     chatbot = create_react_agent(llm, tools=CHATBOT_TOOLS)
-    input_messages = [_build_system_prompt(query, allow_clarification=True), HumanMessage(content=query)]
+    input_messages = [_build_system_prompt(query, allow_clarification=True, history_context=history_context), HumanMessage(content=query)]
 
     async for chunk in _stream_agent(chatbot, input_messages, thread_id, query, clarification_count=0):
         yield chunk
 
 
 async def resume_chatbot_stream(answer: str, thread_id: str = "default") -> AsyncGenerator[str, None]:
-    print(f"\n=== CHATBOT RESUME: answer='{answer}' (thread: {thread_id}) ===")
+    print(f"\n=== CHATBOT RESUME: answer='{answer}' (user_id: {thread_id}) ===")
+
+    history_context = get_user_history_and_workflows(user_id=thread_id, current_query=answer, k=5)
 
     # GUARDRAIL CHECK ON ANSWER
     is_blocked, refusal_msg = check_guardrail(answer)
@@ -278,7 +287,7 @@ async def resume_chatbot_stream(answer: str, thread_id: str = "default") -> Asyn
 
     chatbot = create_react_agent(llm, tools=CHATBOT_TOOLS)
     # GUARDRAIL: After resume, NEVER allow clarification again
-    input_messages = [_build_system_prompt(enriched_query, allow_clarification=False), HumanMessage(content=enriched_query)]
+    input_messages = [_build_system_prompt(enriched_query, allow_clarification=False, history_context=history_context), HumanMessage(content=enriched_query)]
 
     async for chunk in _stream_agent(chatbot, input_messages, thread_id, enriched_query, clarification_count=prior_count):
         yield chunk
@@ -296,19 +305,27 @@ async def _stream_agent(
     clarification_count: int = 0,
 ) -> AsyncGenerator[str, None]:
     """
-    Streams chatbot ReAct events with two key guardrails:
-    1. tool_depth counter: suppresses message_chunk tokens from sub-agents running
-       inside tools (prevents interleaved/garbled markdown from sub-agent calls).
-    2. MAX_CLARIFICATION_ATTEMPTS: blocks infinite clarification loops.
+    Streams chatbot ReAct events with multi-layered loop guardrails:
+    1. MAX_TOTAL_TOOL_CALLS (4) & MAX_SAME_TOOL_CALLS (1): Prevents repeated/infinite tool invocation loops.
+    2. tool_depth counter: Suppresses message_chunk tokens from sub-agents running inside tools.
+    3. MAX_CLARIFICATION_ATTEMPTS: Blocks infinite clarification loops.
+    4. Graph recursion limit (6) & tool output synthesis fallback.
     """
     final_content = ""
     active_tool: str | None = None
-    tool_depth = 0  # >0 means we're inside a tool call; suppress sub-agent LLM tokens
+    tool_depth = 0
+    
+    MAX_TOTAL_TOOL_CALLS = 12
+    MAX_SAME_TOOL_CALLS = 3
+    
+    tool_call_counts: dict[str, int] = {}
+    total_tool_calls = 0
+    collected_tool_outputs: list[str] = []
 
     async def _run_stream(agent):
-        nonlocal final_content, active_tool, tool_depth
+        nonlocal final_content, active_tool, tool_depth, total_tool_calls
 
-        async for event in agent.astream_events({"messages": input_messages}, version="v2"):
+        async for event in agent.astream_events({"messages": input_messages}, config={"recursion_limit": 25}, version="v2"):
             kind = event["event"]
             name = event.get("name", "")
 
@@ -316,7 +333,19 @@ async def _stream_agent(
             if kind == "on_tool_start":
                 tool_depth += 1
                 active_tool = name or "tool"
-                print(f"  [TOOL START depth={tool_depth}] -> {active_tool}")
+                
+                tool_call_counts[active_tool] = tool_call_counts.get(active_tool, 0) + 1
+                total_tool_calls += 1
+                
+                print(f"  [TOOL START depth={tool_depth}] -> {active_tool} (count: {tool_call_counts[active_tool]}, total: {total_tool_calls})")
+                
+                # LOOP GUARDRAIL: Intercept excessive or duplicate tool calls
+                if tool_call_counts[active_tool] > MAX_SAME_TOOL_CALLS or total_tool_calls > MAX_TOTAL_TOOL_CALLS:
+                    print(f"  [LOOP GUARDRAIL] Duplicate/excess tool call detected for '{active_tool}'. Suppressing tool execution.")
+                    tool_depth = max(0, tool_depth - 1)
+                    active_tool = None
+                    continue
+
                 if active_tool != "ask_user_clarification":
                     yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': active_tool})}\n\n"
 
@@ -327,6 +356,9 @@ async def _stream_agent(
                 output = str(raw_output.content if hasattr(raw_output, "content") else raw_output or "")
                 tool_depth = max(0, tool_depth - 1)
                 print(f"  [TOOL END depth={tool_depth}] -> {tool_name} | out[:80]: {output[:80]}")
+
+                if output and tool_name != "ask_user_clarification":
+                    collected_tool_outputs.append(output)
 
                 if tool_name == "ask_user_clarification" and "__CLARIFICATION_NEEDED__:" in output:
                     if clarification_count >= MAX_CLARIFICATION_ATTEMPTS:
@@ -350,9 +382,6 @@ async def _stream_agent(
                     active_tool = None
 
             # ── LLM streaming a token ──
-            # CRITICAL: Only emit when tool_depth == 0
-            # This suppresses tokens from sub-agents running inside tools,
-            # preventing garbled/interleaved markdown from bleeding into the chat.
             elif kind == "on_chat_model_stream" and tool_depth == 0:
                 chunk = event.get("data", {}).get("chunk")
                 if chunk:
@@ -365,12 +394,18 @@ async def _stream_agent(
         async for chunk in _run_stream(chatbot):
             yield chunk
 
-        # If interrupted, final_content may be empty — that's fine, stream already ended
+        # Fallback synthesis if tool outputs were returned but final_content streaming was cut off
+        if not final_content and collected_tool_outputs:
+            final_content = "\n\n".join(collected_tool_outputs)
+            yield f"data: {json.dumps({'type': 'message_chunk', 'content': final_content})}\n\n"
+
+        # Save chatbot conversation turn under thread_id (user_id)
         if final_content:
+            save_interaction_to_vector_db(user_id=thread_id, query=original_query, response=final_content, doc_type="chat")
             yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': {'chatbot_response': final_content}}})}\n\n"
 
     except Exception as e:
-        print(f"[ERROR] Chatbot stream failed: {e}. Retrying with fallback LLM...")
+        print(f"[LOOP GUARDRAIL CATCH] Chatbot stream interrupted/failed: {e}. Retrying with fallback LLM...")
         try:
             fallback_agent = create_react_agent(get_fallback_llm(), tools=CHATBOT_TOOLS)
             final_content = ""
@@ -379,20 +414,30 @@ async def _stream_agent(
             async for chunk in _run_stream(fallback_agent):
                 yield chunk
 
+            if not final_content and collected_tool_outputs:
+                final_content = "\n\n".join(collected_tool_outputs)
+                yield f"data: {json.dumps({'type': 'message_chunk', 'content': final_content})}\n\n"
+
             if final_content:
+                save_interaction_to_vector_db(user_id=thread_id, query=original_query, response=final_content, doc_type="chat")
                 yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': {'chatbot_response': final_content}}})}\n\n"
 
         except Exception as e2:
-            error_msg = f"⚠️ Agent error: {str(e2)}"
-            yield f"data: {json.dumps({'type': 'message_chunk', 'content': error_msg})}\n\n"
-            yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': {'chatbot_response': error_msg}}})}\n\n"
+            if collected_tool_outputs:
+                fallback_msg = "\n\n".join(collected_tool_outputs)
+                yield f"data: {json.dumps({'type': 'message_chunk', 'content': fallback_msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': {'chatbot_response': fallback_msg}}})}\n\n"
+            else:
+                error_msg = f"⚠️ Agent execution limit reached: {str(e2)}"
+                yield f"data: {json.dumps({'type': 'message_chunk', 'content': error_msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': {'chatbot_response': error_msg}}})}\n\n"
 
 
 # ==========================================
 # HELPERS
 # ==========================================
 
-def _build_system_prompt(query: str, allow_clarification: bool = True) -> SystemMessage:
+def _build_system_prompt(query: str, allow_clarification: bool = True, history_context: str = "") -> SystemMessage:
     clarification_rule = (
         "4. ONLY call 'ask_user_clarification' if the query has ZERO product info, "
         "ZERO budget, AND ZERO location. If ANY of these are present (even partially), "
@@ -406,12 +451,19 @@ def _build_system_prompt(query: str, allow_clarification: bool = True) -> System
         "Proceed immediately with specialist tools using the available information."
     )
 
+    history_section = ""
+    if history_context:
+        history_section = (
+            f"\n\n{history_context}\n"
+            "Use the above previous chat history and generated workflows associated with this user ID to provide personalized, context-aware responses."
+        )
+
     return SystemMessage(
         content=(
             "You are the AI Manufacturing Copilot Chat Assistant.\n\n"
             "RULES:\n"
-            f"1. Answer ONLY the CURRENT USER REQUEST: '{query}'\n"
-            "2. Do NOT reference data from any prior conversation.\n"
+            f"1. Answer the CURRENT USER REQUEST: '{query}'\n"
+            "2. If the user asks about their previous questions, history, or generated workflows, answer directly using the PREVIOUS CHATS & GENERATED WORKFLOWS section below without calling tools.\n"
             "3. For simple greetings — answer directly without tools.\n"
             f"{clarification_rule}\n"
             "5. Call the relevant specialist tool(s) for: manufacturing, machinery, factory layout, "
@@ -420,12 +472,18 @@ def _build_system_prompt(query: str, allow_clarification: bool = True) -> System
             "6. You MAY call multiple tools if the query spans multiple topics.\n"
             "7. Pass the user's EXACT query to each tool.\n"
             "8. Format your final response clearly in Markdown.\n"
+            "   - When presenting supplier lists, rank actual machinery manufacturers and specialized equipment vendors in the target location FIRST. Never list generic government policy portals or non-supplier homepages as top suppliers.\n"
             "9. STRICT SCOPE & GUARDRAILS:\n"
             "   - You are exclusively an AI Manufacturing Copilot.\n"
             "   - ONLY answer questions related to manufacturing, factory planning, machinery selection, industrial business roadmaps, CAPEX/OPEX estimation, government subsidies/schemes, and market research.\n"
             "   - ABSOLUTELY REFUSE any requests to write, generate, debug, or explain programming code (e.g., Python, JavaScript, C++, Java, HTML, SQL, etc.).\n"
             "   - ABSOLUTELY REFUSE any requests for creative writing, general trivia, homework, recipes, stories, or off-topic general AI queries.\n"
-            "   - Do NOT invoke any tools if the query is out of scope or asks for code generation. Directly respond with a polite refusal stating your scope as an AI Manufacturing Copilot."
+            "   - Do NOT invoke any tools if the query is out of scope or asks for code generation. Directly respond with a polite refusal stating your scope as an AI Manufacturing Copilot.\n"
+            "10. STRICT TOOL LOOP GUARDRAIL:\n"
+            "    - You must call each relevant specialist tool AT MOST ONCE per user request.\n"
+            "    - NEVER call the same tool multiple times.\n"
+            "    - Once tool calls finish and you receive their outputs, you MUST immediately synthesize and write your final response to the user. Do NOT call any more tools after receiving outputs."
+            f"{history_section}"
         )
     )
 

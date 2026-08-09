@@ -29,7 +29,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 import os
 import json
 from langgraph.graph import StateGraph, END
-from core.vector_store import get_semantic_context, save_interaction_to_vector_db
+from core.vector_store import save_workflow_to_vector_db
 
  
 
@@ -247,6 +247,48 @@ async def router_node(state: AgentState):
 
 
 
+async def _clean_subagent_output(response: dict, user_query: str, llm) -> str:
+    """
+    Cleans sub-agent response and prevents 'Sorry, need more steps' default fallbacks
+    by synthesizing collected tool outputs into a clean Markdown report.
+    """
+    messages = response.get("messages", [])
+    if not messages:
+        return "Report unavailable."
+
+    last_msg = messages[-1]
+    final_output = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+
+    if "Sorry, need more steps" in final_output or not final_output.strip():
+        print(f"[RECOVERY] Sub-agent hit step limit. Synthesizing report from collected tool outputs for '{user_query}'...")
+        collected = []
+        for msg in messages:
+            content = getattr(msg, "content", "")
+            if content and not isinstance(content, list) and len(str(content)) > 20:
+                text_str = str(content)
+                if "Sorry, need more steps" not in text_str and "system" not in text_str.lower()[:30]:
+                    collected.append(text_str[:1000])
+
+        if collected:
+            synthesis_prompt = (
+                f"You are an expert industrial research analyst.\n"
+                f"Synthesize a comprehensive, professional Markdown report for the request: '{user_query}'\n"
+                f"Use the following collected research data points:\n\n"
+                + "\n\n---\n\n".join(collected)
+            )
+            try:
+                syn_resp = await llm.ainvoke([
+                    SystemMessage(content="Output ONLY a clean, well-formatted Markdown report with clear headers and bullet points. Do not include raw JSON or search snippets."),
+                    HumanMessage(content=synthesis_prompt)
+                ])
+                final_output = syn_resp.content
+            except Exception as ex:
+                print(f"[WARNING] Sub-agent fallback synthesis failed: {ex}")
+                final_output = "\n\n".join(collected)
+
+    return final_output
+
+
 async def planning_node(state: AgentState):
     print("--- PLANNING AGENT (Roadmap + costs) ---")
     user_query = state.get("user_query", "")
@@ -275,22 +317,24 @@ async def planning_node(state: AgentState):
 
     print("   -> Thinking and using tools....")
     try:
-        response = await planning_agent.ainvoke({
-            "messages": [system_prompt, HumanMessage(content=query)]
-        })
+        response = await planning_agent.ainvoke(
+            {"messages": [system_prompt, HumanMessage(content=query)]},
+            config={"recursion_limit": 15}
+        )
     except Exception as e:
         print(f"[WARNING] Planning Agent primary LLM failed: {e}. Retrying with fallback LLM...")
         fallback_llm = get_fallback_llm()
         fallback_agent = create_react_agent(fallback_llm, tools=all_planning_tools)
         try:
-            response = await fallback_agent.ainvoke({
-                "messages": [system_prompt, HumanMessage(content=query)]
-            })
+            response = await fallback_agent.ainvoke(
+                {"messages": [system_prompt, HumanMessage(content=query)]},
+                config={"recursion_limit": 15}
+            )
         except Exception as e2:
             print(f"[ERROR] Planning Agent fallback LLM failed: {e2}")
             response = {"messages": [SystemMessage(content=f"Error executing Planning Agent: {e2}")]}
 
-    final_output = response["messages"][-1].content
+    final_output = await _clean_subagent_output(response, user_query, llm)
     return {
         "planning_result": {"report": final_output},
         "messages": ["Planning Agent successfully generated the roadmap and costs."]
@@ -325,22 +369,24 @@ async def manufacturing_node(state: AgentState):
 
     print("   -> Thinking and using manufacturing tools....")
     try:
-        response = await manufacturing_agent.ainvoke({
-            "messages": [system_prompt, HumanMessage(content=query)]
-        })
+        response = await manufacturing_agent.ainvoke(
+            {"messages": [system_prompt, HumanMessage(content=query)]},
+            config={"recursion_limit": 15}
+        )
     except Exception as e:
         print(f"[WARNING] Manufacturing Agent primary LLM failed: {e}. Retrying with fallback LLM...")
         fallback_llm = get_fallback_llm()
         fallback_agent = create_react_agent(fallback_llm, tools=all_manufacturing_tools)
         try:
-            response = await fallback_agent.ainvoke({
-                "messages": [system_prompt, HumanMessage(content=query)]
-            })
+            response = await fallback_agent.ainvoke(
+                {"messages": [system_prompt, HumanMessage(content=query)]},
+                config={"recursion_limit": 15}
+            )
         except Exception as e2:
             print(f"[ERROR] Manufacturing Agent fallback LLM failed: {e2}")
             response = {"messages": [SystemMessage(content=f"Error executing Manufacturing Agent: {e2}")]}
 
-    final_output = response["messages"][-1].content
+    final_output = await _clean_subagent_output(response, user_query, llm)
     return {
         "manufacturing_result": {"report": final_output},
         "messages": ["Manufacturing Agent successfully designed the production line."]
@@ -375,22 +421,24 @@ async def scheme_node(state: AgentState):
     print(" -> Thinking and using scheme tools...")
 
     try:
-        response = await scheme_agent.ainvoke({
-            "messages": [system_prompt, HumanMessage(content=query)]
-        })
+        response = await scheme_agent.ainvoke(
+            {"messages": [system_prompt, HumanMessage(content=query)]},
+            config={"recursion_limit": 15}
+        )
     except Exception as e:
         print(f"[WARNING] Scheme Agent primary LLM failed: {e}. Retrying with fallback LLM...")
         fallback_llm = get_fallback_llm()
         fallback_agent = create_react_agent(fallback_llm, tools=all_scheme_tools)
         try:
-            response = await fallback_agent.ainvoke({
-                "messages": [system_prompt, HumanMessage(content=query)]
-            })
+            response = await fallback_agent.ainvoke(
+                {"messages": [system_prompt, HumanMessage(content=query)]},
+                config={"recursion_limit": 15}
+            )
         except Exception as e2:
             print(f"[ERROR] Scheme Agent fallback LLM failed: {e2}")
             response = {"messages": [SystemMessage(content=f"Error executing Scheme Agent: {e2}")]}
 
-    final_output = response["messages"][-1].content
+    final_output = await _clean_subagent_output(response, user_query, llm)
     return {
         "scheme_result": {"report": final_output},
         "messages": ["Scheme Agent successfully found applicable schemes and funding."]
@@ -415,32 +463,38 @@ async def research_node(state: AgentState):
     research_agent = create_react_agent(llm, tools=all_research_tools)
 
     system_prompt = SystemMessage(content=(
-        f"You are an expert Research Agent (Internet Intelligence). "
-        f"CRITICAL: Focus ONLY on the Product, Industry, and Location from the CURRENT USER REQUEST ('{user_query}'). "
-        f"Do NOT generate a report for any past product in history. "
+        f"You are an expert Research Agent (Internet Intelligence).\n"
+        f"CRITICAL: Focus ONLY on the Product, Industry, and Location from the CURRENT USER REQUEST ('{user_query}').\n"
+        f"Do NOT generate a report for any past product in history.\n"
         f"You MUST use your tools to analyze Competitors, Market Size (TAM/SAM/SOM), find Suppliers, "
-        f"and get the latest Industry Trends and News. "
-        f"Summarize all the findings beautifully in Markdown format."
+        f"and get the latest Industry Trends and News.\n\n"
+        f"RANKING RULES FOR SUPPLIERS:\n"
+        f"1. When listing suppliers, rank actual equipment manufacturers and machinery suppliers in the target location FIRST.\n"
+        f"2. Present verified B2B vendors (IndiaMART, TradeIndia, verified corporate domains) with specifications and pricing.\n"
+        f"3. NEVER rank generic government portals, policy homepages, or non-supplier landing pages as top suppliers. Place general portal links under 'Additional Resources' at the bottom.\n"
+        f"Summarize all findings beautifully in Markdown format."
     ))
 
     print("-> Thinking and using research tools...")
     try:
-        response = await research_agent.ainvoke({
-            "messages": [system_prompt, HumanMessage(content=query)]
-        })
+        response = await research_agent.ainvoke(
+            {"messages": [system_prompt, HumanMessage(content=query)]},
+            config={"recursion_limit": 25}
+        )
     except Exception as e:
         print(f"[WARNING] Research Agent primary LLM failed: {e}. Retrying with fallback LLM...")
         fallback_llm = get_fallback_llm()
         fallback_agent = create_react_agent(fallback_llm, tools=all_research_tools)
         try:
-            response = await fallback_agent.ainvoke({
-                "messages": [system_prompt, HumanMessage(content=query)]
-            })
+            response = await fallback_agent.ainvoke(
+                {"messages": [system_prompt, HumanMessage(content=query)]},
+                config={"recursion_limit": 25}
+            )
         except Exception as e2:
             print(f"[ERROR] Research Agent fallback LLM failed: {e2}")
             response = {"messages": [SystemMessage(content=f"Error executing Research Agent: {e2}")]}
 
-    final_output = response["messages"][-1].content
+    final_output = await _clean_subagent_output(response, user_query, llm)
     return {
         "research_result": {"report": final_output},
         "messages": ["Research Agent successfully analyzed the market and competitors."]
@@ -594,14 +648,13 @@ def _extract_content_text(content) -> str:
 async def run_orchestrator_stream(query: str, thread_id: str = "default_session"):
     """
     Streaming Entry Point to trigger the AI brain and yield Server-Sent Events.
+    Note: As per requirements, user history/context is NOT passed to the orchestrator.
     """
-    semantic_context = get_semantic_context(user_id=thread_id, current_query=query, k=3)
-
     checkpointer = await get_orchestrator_checkpointer()
     graph = orchestrator_workflow.compile(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": thread_id}}
 
-    inputs = {"user_query": query, "semantic_context": semantic_context, "messages": []}
+    inputs = {"user_query": query, "semantic_context": "", "messages": []}
     
     SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research", "judge"}
 
@@ -648,8 +701,8 @@ async def run_orchestrator_stream(query: str, thread_id: str = "default_session"
     final_report = final_state.values.get("final_report")
     
     if final_report:
-        final_response_text = str(final_report)
-        save_interaction_to_vector_db(user_id=thread_id, query=query, response=final_response_text)
+        # Save generated workflow associated with this user_id for later Chatbot retrieval
+        save_workflow_to_vector_db(user_id=thread_id, query=query, final_report=final_report)
         
         yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': final_report}})}\n\n"
 

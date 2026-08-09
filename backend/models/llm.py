@@ -119,7 +119,6 @@ def get_nvidia_llm2(model_name: str = "nvidia/nemotron-3-ultra-550b-a55b", tempe
                 temperature=temperature,
                 top_p=0.95,
                 max_tokens=max_tokens,
-                extra_body={"chat_template_kwargs":{"thinking":True,"reasoning_effort":"high"}},
             )
         except Exception:
             pass
@@ -141,7 +140,7 @@ def get_nvidia_2(model_name: str = "nvidia/nemotron-3-super-120b-a12b", temperat
     return get_default_LLM(temperature=temperature, max_tokens=max_tokens)
 
 
-def get_nvidia_digital_twin_llm(model_name: str = "meta/llama-3.3-70b-instruct", temperature: float = 0.2, max_tokens: int = 2000):
+def get_nvidia_digital_twin_llm(model_name: str = "z-ai/glm-5.2", temperature: float = 0.2, max_tokens: int = 2000):
     key = settings.NVIDIA_API_KEY_3 or settings.NVIDIA_API_KEY_2 or settings.NVIDIA_API_KEY
     if key:
         try:
