@@ -38,7 +38,10 @@ console = Console()
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
-origins = [
+raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+env_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
+
+default_origins = [
     "http://localhost:3000",  # Next.js
     "http://localhost:3001",  # Next.js fallback
     "http://localhost:5173",  # Vite
@@ -47,9 +50,12 @@ origins = [
     "http://127.0.0.1:5173",
 ]
 
+origins = list(set(default_origins + env_origins))
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
