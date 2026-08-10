@@ -20,12 +20,25 @@ if DATABASE_URL and (DATABASE_URL.startswith("postgresql") or DATABASE_URL.start
                 )
                 print("[INFO] Initialized NVIDIA Embeddings (nvidia/nv-embedqa-e5-v5) for vector store.")
             except Exception as nvidia_err:
-                print(f"[WARNING] Failed to load NVIDIAEmbeddings: {nvidia_err}. Falling back to HuggingFace.")
-                from langchain_huggingface import HuggingFaceEmbeddings
-                embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        else:
-            from langchain_huggingface import HuggingFaceEmbeddings
-            embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+                print(f"[WARNING] Failed to load NVIDIAEmbeddings: {nvidia_err}.")
+                embeddings = None
+
+        if not embeddings and getattr(settings, "GEMINI_API_KEY", None):
+            try:
+                from langchain_google_genai import GoogleGenerativeAIEmbeddings
+                embeddings = GoogleGenerativeAIEmbeddings(
+                    model="models/text-embedding-004",
+                    google_api_key=settings.GEMINI_API_KEY
+                )
+                print("[INFO] Initialized Google Generative AI Embeddings for vector store.")
+            except Exception as gemini_err:
+                print(f"[WARNING] Failed to load GoogleGenerativeAIEmbeddings: {gemini_err}.")
+                embeddings = None
+
+        if not embeddings:
+            from langchain_community.embeddings import FakeEmbeddings
+            embeddings = FakeEmbeddings(size=384)
+            print("[INFO] Initialized FakeEmbeddings for vector store fallback.")
 
         engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
         vector_store = PGVector(

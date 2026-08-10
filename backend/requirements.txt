@@ -20,7 +20,6 @@ html2text>=2025.4.15
 readability-lxml>=0.8.4.1
 fake-useragent>=2.2.0
 rich>=15.0.0
-sentence-transformers>=5.7.0
 langchain>=1.3.14
 langchain-community>=0.4.2
 langchain-core>=1.5.3
