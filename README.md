@@ -1,8 +1,8 @@
 # 🏭 AI Copilot For Manufacturing StartUp
 
-<p align="center">
+<!-- <p align="center">
     <h3>Team: Apex-X</h3>
-</p>
+</p> -->
 
 > **An India-first, multi-agent AI platform designed to help manufacturing entrepreneurs plan, launch, and scale manufacturing businesses more effectively. The platform combines business planning, manufacturing intelligence, scheme discovery, and market research into a single decision-support system.**
 
@@ -16,9 +16,7 @@
 
 ---
 
-## 📊 Presentation Deck (PPT)
 
-🔗 **[Click Here to Access Google Slides Presentation](https://docs.google.com/presentation/d/19FM6NSTSOJBKybi4UgoeNMXPA6Ugg7GN/edit?slide=id.p1#slide=id.p1)**
 
 ---
 
@@ -231,7 +229,4 @@ The AI Manufacturing Copilot simplifies the journey from idea to factory setup b
 
 ---
 
-## 📜 License & Team
 
-Built with ❤️ for the Hackathon by **Team Apex-X**.  
-Licensed under the [MIT License](LICENSE).
