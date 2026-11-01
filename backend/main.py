@@ -1,4 +1,3 @@
-import os
 import sys
 import asyncio
 
@@ -24,25 +23,31 @@ from agents.orchestrator import run_orchestrator
 from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi import FastAPI, Depends
-from core.database import engine, Base
+from core.database import engine, Base, _fallback_engine
 from api.auth_router import router as auth_router
+from api.compliance_router import router as compliance_router
+from api.plan_router import router as plan_router
+from api.location_router import router as location_router
 from core.auth import get_current_user_id, require_admin
 from models.user import User
+from models.plan import FactoryPlan
 from fastapi.responses import StreamingResponse
 from agents.orchestrator import run_orchestrator_stream, resume_orchestrator_stream
 from agents.chatbot import run_chatbot_stream, resume_chatbot_stream
 from digital_twin.agent import run_digital_twin_agent
 
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+    if _fallback_engine is not None and _fallback_engine != engine:
+        Base.metadata.create_all(bind=_fallback_engine)
+except Exception as e:
+    print(f"[WARNING] Database tables initialization failed: {e}")
 
 console = Console()
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
-raw_origins = os.getenv("ALLOWED_ORIGINS", "")
-env_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
-
-default_origins = [
+origins = [
     "http://localhost:3000",  # Next.js
     "http://localhost:3001",  # Next.js fallback
     "http://localhost:5173",  # Vite
@@ -51,18 +56,18 @@ default_origins = [
     "http://127.0.0.1:5173",
 ]
 
-origins = list(set(default_origins + env_origins))
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(auth_router)
+app.include_router(compliance_router)
+app.include_router(plan_router)
+app.include_router(location_router)
 
 @app.get("/health")
 def health_check():
@@ -184,11 +189,6 @@ async def generate_business_plan(
             final.get("research", {})
         )
 
-        show_agent(
-            "⚖️ Judge Agent",
-            final.get("judge", {})
-        )
-
         console.print(Rule(style="cyan"))
 
         summary = Table(title="📊 Execution Summary")
@@ -238,18 +238,41 @@ async def generate_business_plan(
             detail=f"Internal Server Error: {str(e)}"
         )
 
+class ChatMessage(BaseModel):
+    role: str = "user"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    query: str
+    history: list[dict] | list[ChatMessage] = Field(default_factory=list)
+    planner_query: str | None = None
+
+
 @app.post("/api/chat/stream")
 async def chat_stream(
-    request: PlanRequest,
+    request: ChatRequest,
     user_id: str = Depends(get_current_user_id)
 ):
     """
     Streams the chatbot's ReAct loop directly. The chatbot decides which specialist
     tools (planning, manufacturing, scheme, research) to invoke itself.
-    No orchestrator router graph is involved.
+    Multi-turn conversation history and semantic planner context are passed.
     """
+    history_dicts = []
+    for item in request.history:
+        if isinstance(item, BaseModel):
+            history_dicts.append(item.model_dump())
+        elif isinstance(item, dict):
+            history_dicts.append(item)
+
     return StreamingResponse(
-        run_chatbot_stream(request.query, thread_id=user_id),
+        run_chatbot_stream(
+            request.query,
+            thread_id=user_id,
+            history=history_dicts,
+            planner_query=request.planner_query,
+        ),
         media_type="text/event-stream"
     )
 
@@ -353,33 +376,33 @@ async def _stream_what_if(query: str, modification: str):
 
 
 @app.post("/api/digital-twin/generate")
-async def generate_digital_twin(
+async def digital_twin_generate(
     request: DigitalTwinRequest,
-    user_id: str = Depends(get_current_user_id)
+    user_id: str = Depends(get_current_user_id),
 ):
     """
-    Triggers the Digital Twin Agent and streams the 3D scene & simulation results.
+    Generate an AI Factory Digital Twin from a natural-language query.
+    Streams SSE progress events, then emits the complete twin JSON.
     """
     return StreamingResponse(
         _stream_digital_twin(request.query),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
     )
 
 
 @app.post("/api/digital-twin/what-if")
-async def what_if_digital_twin(
+async def digital_twin_what_if(
     request: WhatIfRequest,
-    user_id: str = Depends(get_current_user_id)
+    user_id: str = Depends(get_current_user_id),
 ):
     """
-    Runs a What-If scenario modification on the Digital Twin.
+    Run a what-if scenario on an existing factory configuration.
+    Re-runs the full Digital Twin pipeline with the modification applied.
     """
     return StreamingResponse(
         _stream_what_if(request.query, request.modification),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
     )
-
-
 
 
 if __name__ == "__main__":

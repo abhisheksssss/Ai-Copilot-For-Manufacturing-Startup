@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Literal
 from pydantic import BaseModel, Field
 from models.llm import get_nvidia_2, get_default_LLM
@@ -6,27 +7,34 @@ from models.llm import get_nvidia_2, get_default_LLM
 
 class JudgeIssue(BaseModel):
     agent: str = Field(
+        default="cross_agent",
         description="Which agent output contains the issue: 'planning', 'manufacturing', 'scheme', 'research', or 'cross_agent'"
     )
     category: str = Field(
+        default="general",
         description="Category of issue: 'factual_accuracy', 'financial_consistency', 'manufacturing_feasibility', 'scheme_compliance', 'research_validation', 'scope'"
     )
     severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"] = Field(
+        default="MEDIUM",
         description="Severity level of the identified issue"
     )
     issue: str = Field(
+        default="",
         description="Short title/description of the mistake or inconsistency"
     )
     reason: str = Field(
+        default="",
         description="Detailed technical reason explaining why this is a mistake or contradiction"
     )
     correction: str = Field(
+        default="",
         description="Clear explanation of what needs to be corrected"
     )
 
 
 class JudgeResult(BaseModel):
     status: Literal["PASS", "ERROR", "OUT_OF_SCOPE"] = Field(
+        default="PASS",
         description="Overall status of evaluation: PASS if no critical/high issues found and query is in scope; ERROR if issues found; OUT_OF_SCOPE if user query is outside manufacturing startup scope."
     )
     mistakes: list[JudgeIssue] = Field(
@@ -34,8 +42,31 @@ class JudgeResult(BaseModel):
         description="List of identified issues and mistakes"
     )
     summary: str = Field(
+        default="Judge evaluation complete. No critical issues detected.",
         description="Overall summary of the evaluation"
     )
+
+
+def _parse_judge_json(raw_text: str) -> JudgeResult | None:
+    """Safely extracts and parses JSON from raw LLM text into a JudgeResult."""
+    try:
+        text = str(raw_text).strip()
+        # 1. Match ```json { ... } ``` or ``` { ... } ```
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+        
+        # 2. Extract outermost { ... }
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            json_str = text[start : end + 1]
+            data = json.loads(json_str)
+            if isinstance(data, dict):
+                return JudgeResult.model_validate(data)
+    except Exception as e:
+        print(f"[DEBUG] _parse_judge_json failed: {e}")
+    return None
 
 
 JUDGE_PROMPT_TEMPLATE = """
@@ -101,7 +132,7 @@ EVALUATION CHECKLIST
 6. CROSS-AGENT CONTRADICTIONS:
    - Compare outputs across Planning, Manufacturing, Scheme, and Research agents for conflicts.
 
-Evaluate now and return structured output.
+Evaluate now and return structured output matching the JudgeResult schema.
 """
 
 
@@ -130,25 +161,38 @@ async def run_judge_agent(
         research_output=r_text,
     )
 
+    # 1. Try primary Judge LLM (NVIDIA Nemotron 3 Ultra)
     try:
-        judge_llm = get_nvidia_2()
+        judge_llm = get_nvidia_2(max_tokens=3000)
         try:
-            structured_llm = judge_llm.with_structured_output(JudgeResult, method="json_mode")
-            result = await structured_llm.ainvoke(prompt)
-        except Exception:
             structured_llm = judge_llm.with_structured_output(JudgeResult)
             result = await structured_llm.ainvoke(prompt)
-        if isinstance(result, JudgeResult):
-            return result
+            if isinstance(result, JudgeResult):
+                return result
+        except Exception as st_err:
+            # Fallback to direct raw JSON prompt invocation
+            json_prompt = prompt + "\n\nCRITICAL: Respond ONLY with a valid JSON object matching the JudgeResult schema: {\"status\": \"PASS\"|\"ERROR\"|\"OUT_OF_SCOPE\", \"mistakes\": [...], \"summary\": \"...\"}."
+            raw_resp = await judge_llm.ainvoke(json_prompt)
+            parsed = _parse_judge_json(getattr(raw_resp, "content", str(raw_resp)))
+            if parsed:
+                return parsed
     except Exception as e:
-        print(f"[WARNING] Judge Agent primary LLM (get_nvidia_2) failed: {e}. Trying default LLM fallback...")
+        print(f"[WARNING] Judge Agent primary LLM failed: {e}. Trying default LLM fallback...")
 
+    # 2. Try Fallback LLM
     try:
-        fallback_llm = get_default_LLM()
-        structured_llm = fallback_llm.with_structured_output(JudgeResult)
-        result = await structured_llm.ainvoke(prompt)
-        if isinstance(result, JudgeResult):
-            return result
+        fallback_llm = get_default_LLM(max_tokens=3000)
+        try:
+            structured_llm = fallback_llm.with_structured_output(JudgeResult)
+            result = await structured_llm.ainvoke(prompt)
+            if isinstance(result, JudgeResult):
+                return result
+        except Exception:
+            json_prompt = prompt + "\n\nCRITICAL: Respond ONLY with a valid JSON object matching the JudgeResult schema: {\"status\": \"PASS\"|\"ERROR\"|\"OUT_OF_SCOPE\", \"mistakes\": [...], \"summary\": \"...\"}."
+            raw_resp = await fallback_llm.ainvoke(json_prompt)
+            parsed = _parse_judge_json(getattr(raw_resp, "content", str(raw_resp)))
+            if parsed:
+                return parsed
     except Exception as e2:
         print(f"[ERROR] Judge Agent fallback LLM failed: {e2}")
 

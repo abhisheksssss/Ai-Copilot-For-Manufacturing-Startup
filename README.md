@@ -69,13 +69,22 @@ The proposed solution is a multi-agent AI manufacturing copilot built using Larg
 - Supplier & vendor discovery
 - Patent and industry report search
 
+### 🛡️ 5. Compliance & ESG Agent
+- **CPCB / SPCB Sector Categorization**: 419 official industrial sectors categorized across Red, Orange, Green, White, and Blue categories based on Pollution Index (PI) scores.
+- **Statutory Clearances Matrix**: Auto-generates timelines, fee structures, and document checklists for Consent to Establish (CTE), Consent to Operate (CTO), Factory Inspectorate (DISH), Fire Safety NOC, Boiler Clearances, and CGWA Groundwater NOC.
+- **Carbon Footprint Modeling**: Scope 1 (backup diesel fuel: 2.68 kg CO2e/L) and Scope 2 (grid electricity: CEA 0.716 kg CO2e/kWh) with embodied carbon intensity per manufactured product.
+- **Rooftop Solar & Payback Optimizer**: Shadow-free rooftop sizing, turnkey CAPEX, annual electricity savings at commercial tariffs, payback period, and 25-year lifetime net savings.
+
 ---
 
 ## 🔥 Key Features
 
-- **Self-Correcting Multi-Agent AI**: Collaborative validation and multi-step reasoning for improved accuracy.
+- **Self-Correcting Multi-Agent AI**: Collaborative validation and multi-step reasoning across Planning, Manufacturing, Scheme, Research, and Compliance agents.
 - **Python Financial Engine**: Isolated Python execution for precise financial calculations (IRR, NPV, ROI, break-even, loan schedules).
-- **AI Quality & Compliance Validation**: Automatic auditing against BIS standards, ISO requirements, government scheme eligibility, and financial consistency.
+- **Automated Statutory Clearances Checklist**: Step-by-step permits roadmap (CTE, CTO, DISH, Fire NOC, Boilers, CGWA) with document requirements and government fees.
+- **CPCB Pollution Index (PI) Classifier**: Instant classification across 419 sectors (White, Green, Orange, Red, Blue) with chemical process overrides.
+- **Scope 1 & Scope 2 GHG Carbon Footprint Engine**: Automated carbon accounting aligned with India Central Electricity Authority (CEA) grid emission factors.
+- **Rooftop Solar & Net-Zero Financial Modeling**: Automatic rooftop solar plant sizing (kWp), annual power bill savings (₹), and investment payback period (typically 3–4 years).
 - **Manufacturing Intelligence**: Automated BOM generation, machinery recommendations, factory layout design, utilities, and workflow orchestration.
 - **India-First Scheme Engine**: Comprehensive coverage of MSME, Startup India, SIDBI, CGTMSE, PLI, and state-specific incentives.
 - **Market Intelligence**: Supplier discovery, competitor analysis, patent search, and TAM/SAM/SOM market estimation.
@@ -87,9 +96,9 @@ The proposed solution is a multi-agent AI manufacturing copilot built using Larg
 
 - 🎯 **100% Math Precision** through isolated Python execution for reliable calculations.
 - ⚡ **95% Faster Planning** by reducing weeks or months of research into minutes.
-- 💰 **Reduced Consultancy Costs** through automation of planning, manufacturing, and financial analysis.
-- 🏛️ **Government Funding Optimization** by identifying relevant schemes, subsidies, grants, and loans.
-- 📄 **Bank-Ready Reports** for loan applications and investor presentations.
+- 💰 **Reduced Consultancy Costs** through automation of planning, manufacturing, statutory permits, and financial analysis.
+- 🏛️ **Government Funding & Subsidy Optimization** by identifying relevant schemes, subsidies, grants, and loans.
+- 🌿 **Bank-Ready ESG & Compliance Reports** meeting environmental standards required for SIDBI/SBI green loans and global supply chains.
 
 ---
 
@@ -103,7 +112,7 @@ Below is the system architecture and workflow diagram representing the end-to-en
 
 ```mermaid
 graph TD
-    User([User / Founder]) <--> Frontend[Next.js 16 + R3F 3D UI]
+    User([User / Founder]) <--> Frontend[Next.js 16 + R3F 3D UI + ESG Dashboard]
     Frontend <-->|REST / SSE Streaming| API[FastAPI Backend Engine]
     
     subgraph Core AI Agents
@@ -111,6 +120,7 @@ graph TD
         API --> MfgAgent[Manufacturing Agent - BOM & 3D Twin]
         API --> SchemeAgent[Scheme Agent - Subsidies & Loans]
         API --> ResearchAgent[Research Agent - Scraper & Patents]
+        API --> ComplianceAgent[Compliance & ESG Agent - CPCB & Solar]
     end
 
     subgraph Engines & Verification
@@ -118,10 +128,12 @@ graph TD
         MfgAgent --> DigitalTwin[3D Factory Simulator - R3F]
         SchemeAgent --> SchemeDB[India MSME / PLI Schemes DB]
         ResearchAgent --> WebScraper[Live Web Scraper & PgVector RAG]
+        ComplianceAgent --> CPCBEngine[CPCB 419-Sector Classifier & Solar Model]
     end
 
     subgraph Storage & Cloud
         API --> NeonDB[(Neon PostgreSQL + PgVector)]
+        ComplianceAgent --> ComplianceDB[(419 Sector OKF & JSON Master)]
     end
 ```
 
@@ -235,3 +247,5 @@ The AI Manufacturing Copilot simplifies the journey from idea to factory setup b
 
 Built with ❤️ for the Hackathon by **Team Apex-X**.  
 Licensed under the [MIT License](LICENSE).
+
+

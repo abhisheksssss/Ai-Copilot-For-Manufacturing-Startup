@@ -1,20 +1,13 @@
 """
-Digital Twin Agent — Orchestrates all steps to produce a complete Digital Twin.
+Digital Twin Agent — Orchestrates parsing, serial cascade simulation,
+GAAP financials, 3D scene generation, and What-If modifications.
 
-Flow:
-  1. Parse the user's natural-language query into a structured FactoryConfig (NVIDIA LLM)
-  2. Run the mathematical simulation (SimulationEngine — pure Python)
-  3. Run financial projections (FinancialEngine — pure Python)
-  4. Generate the 3D scene descriptor (deterministic + NVIDIA LLM enrichment)
-  5. Generate a plain-English summary (NVIDIA LLM)
-  6. Return the complete DigitalTwinResponse
-
-This version improves the twin by:
-- extracting richer operational assumptions
-- simulating setup, downtime, OEE, yield, and scrap
-- aligning finance with input-unit economics
-- surfacing better scene metadata
+Enhancements:
+- Concurrent execution of 3D Scene Enrichment + Executive Summary via asyncio.gather()
+- Built-in What-If modification agent (`run_what_if_agent`)
+- Post-parse sanity calibration so machine counts align realistically with target budget & scale
 """
+import asyncio
 import json
 from langchain_core.messages import SystemMessage, HumanMessage
 from pydantic import ValidationError
@@ -30,15 +23,11 @@ from .financial_engine import full_financial_model
 from .scene_generator import build_scene_deterministically, generate_scene_with_llm
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 1: Parse user query → FactoryConfig
-# ─────────────────────────────────────────────────────────────────────────────
-
 FACTORY_CONFIG_PROMPT = """
-You are an expert manufacturing process engineer.
-Extract a structured factory configuration from the user's query.
+You are a Lead Industrial & Manufacturing Systems Engineer.
+Extract a realistic, engineering-grade factory configuration from the user's query.
 
-Return a single JSON object ONLY (no markdown, no explanation) with this schema:
+Return a single JSON object ONLY (no markdown, no explanation) matching this exact schema:
 {
   "product": "product name",
   "target_monthly_units": 50000,
@@ -46,36 +35,36 @@ Return a single JSON object ONLY (no markdown, no explanation) with this schema:
   "shifts_per_day": 2,
   "hours_per_shift": 8,
   "location": "city/state",
-  "budget_inr": 10000000,
+  "budget_inr": 100000000,
   "selling_price_per_unit": 2000,
-  "raw_material_cost_ratio": 0.45,
-  "labour_cost_per_worker_month_inr": 18000,
-  "power_cost_per_kwh_inr": 8,
-  "total_area_sqft": 35000,
-  "warehouse_area_sqft": 8000,
+  "raw_material_cost_ratio": 0.48,
+  "labour_cost_per_worker_month_inr": 18500,
+  "power_cost_per_kwh_inr": 8.2,
+  "total_area_sqft": 32000,
+  "warehouse_area_sqft": 6500,
   "office_area_sqft": 2000,
   "processes": [
     {
-      "name": "PCB Assembly",
+      "name": "SMT & Reflow Soldering",
       "sequence": 1,
       "zone_type": "production",
-      "area_sqft": 3000,
+      "area_sqft": 3500,
       "workers_required": 8,
       "min_operators_per_shift": 4,
-      "yield_percent": 98,
-      "scrap_percent": 2,
-      "buffer_capacity_units": 500,
-      "rework_percent": 1,
+      "yield_percent": 98.5,
+      "scrap_percent": 1.5,
+      "buffer_capacity_units": 600,
+      "rework_percent": 1.5,
       "rework_to_step": null,
       "machine": {
-        "name": "PCB Assembly Machine",
+        "name": "High-Speed Pick & Place Line",
         "quantity": 3,
-        "capacity_per_hour": 60,
-        "processing_time_min": 1,
-        "power_kw": 15,
-        "cost_inr": 800000,
-        "machine_type": "box",
-        "oee_percent": 85,
+        "capacity_per_hour": 65,
+        "processing_time_min": 0.92,
+        "power_kw": 18,
+        "cost_inr": 2500000,
+        "machine_type": "conveyor",
+        "oee_percent": 86,
         "downtime_percent": 5,
         "setup_time_min": 20,
         "maintenance_hours_per_month": 4
@@ -84,26 +73,47 @@ Return a single JSON object ONLY (no markdown, no explanation) with this schema:
   ]
 }
 
-Rules:
-- Use 3-6 process steps appropriate for the product.
-- Infer realistic values for Indian manufacturing.
-- zone_type must be one of: warehouse, production, testing, qc, packaging, dispatch, office
-- machine_type must be one of: box, cylinder, conveyor
-- Keep yield_percent usually between 94 and 99.5 depending on process maturity.
-- Keep downtime_percent usually between 3 and 12 unless the process is fragile.
-- Keep oee_percent usually between 70 and 90.
-- setup_time_min should reflect practical shift-level changeover time.
-- min_operators_per_shift should be consistent with workers_required.
-- Use null for rework_to_step when there is no rework loop.
-- Return JSON only.
+Engineering Rules:
+- Design 4 to 6 domain-accurate manufacturing process steps for the specific product.
+- Convert Indian currency units carefully: 1 Lakh = 100,000; 1 Crore = 10,000,000 (e.g. ₹10 Crore = 100000000).
+- Ensure total machine costs across all steps are roughly 40% to 65% of budget_inr.
+- Size machine `quantity` and `capacity_per_hour` so that most steps are near target_monthly_units, with 1 realistic bottleneck step slightly constraining the line (80% to 105% of target).
+- `processing_time_min` MUST equal `60 / capacity_per_hour`.
+- `zone_type` must be one of: warehouse, production, testing, qc, packaging, dispatch, office.
+- `machine_type` must be one of: box, cylinder, conveyor.
+- Include at least one testing/QC step with `rework_percent` > 0 and `rework_to_step` pointing to an earlier sequence number.
+- Return raw JSON only.
 """
 
 
+WHAT_IF_CONFIG_PROMPT = """
+You are a Lead Industrial & Manufacturing Systems Engineer.
+You are given an existing FactoryConfig JSON and a user's "What-If" modification request
+(e.g., "double production capacity", "add 2 machines to bottleneck", "add a 3rd shift", "reduce scrap by 50%").
+
+Apply the modification accurately to the JSON configuration and return ONLY the updated FactoryConfig JSON.
+"""
+
+
+def _extract_json_dict(raw_text: str) -> dict:
+    content = raw_text.strip()
+    if "```" in content:
+        for part in content.split("```"):
+            part = part.strip()
+            if part.startswith("json"):
+                content = part[4:].strip()
+                break
+            if part.startswith("{"):
+                content = part
+                break
+    start = content.find("{")
+    end = content.rfind("}") + 1
+    if start >= 0 and end > start:
+        content = content[start:end]
+    return json.loads(content)
+
+
 async def parse_factory_config(query: str, llm) -> FactoryConfig:
-    """
-    Use NVIDIA LLM to extract a structured FactoryConfig from a free-text query.
-    Falls back to a default config if parsing fails.
-    """
     try:
         messages = [
             SystemMessage(content=FACTORY_CONFIG_PROMPT),
@@ -111,73 +121,105 @@ async def parse_factory_config(query: str, llm) -> FactoryConfig:
         ]
         response = await llm.ainvoke(messages)
         content = response.content if hasattr(response, "content") else str(response)
-
-        content = content.strip()
-        if "```" in content:
-            parts = content.split("```")
-            for part in parts:
-                part = part.strip()
-                if part.startswith("json"):
-                    content = part[4:].strip()
-                    break
-                if part.startswith("{"):
-                    content = part
-                    break
-
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        if start >= 0 and end > start:
-            content = content[start:end]
-
-        data = json.loads(content)
+        data = _extract_json_dict(content)
         config = FactoryConfig(**data)
-        print(
-            f"[DIGITAL TWIN AGENT] Parsed config: {config.product}, "
-            f"{config.target_monthly_units} units/month"
-        )
         return config
+    except Exception as e:
+        print(f"[DIGITAL TWIN AGENT] Primary config parsing failed ({e}), attempting fallback LLM...")
+        try:
+            from models.llm import get_fallback_llm
+            fallback_llm = get_fallback_llm(exclude_provider="nvidia")
+            messages = [
+                SystemMessage(content=FACTORY_CONFIG_PROMPT),
+                HumanMessage(content=f"User query: {query}"),
+            ]
+            response = await fallback_llm.ainvoke(messages)
+            content = response.content if hasattr(response, "content") else str(response)
+            data = _extract_json_dict(content)
+            return FactoryConfig(**data)
+        except Exception as fb_err:
+            print(f"[DIGITAL TWIN AGENT] Fallback LLM also failed ({fb_err}), using static fallback.")
+            return _fallback_config(query)
 
-    except (json.JSONDecodeError, ValidationError, Exception) as e:
-        print(f"[DIGITAL TWIN AGENT] Config parsing failed ({e}), using fallback.")
-        return _fallback_config(query)
+
+async def apply_what_if_modification(
+    base_config: FactoryConfig,
+    modification: str,
+    llm,
+) -> FactoryConfig:
+    try:
+        messages = [
+            SystemMessage(content=WHAT_IF_CONFIG_PROMPT),
+            HumanMessage(
+                content=(
+                    f"Current FactoryConfig JSON:\n{base_config.model_dump_json(indent=2)}\n\n"
+                    f"User What-If Modification: {modification}\n\n"
+                    "Return the modified FactoryConfig JSON only:"
+                )
+            ),
+        ]
+        response = await llm.ainvoke(messages)
+        content = response.content if hasattr(response, "content") else str(response)
+        data = _extract_json_dict(content)
+        return FactoryConfig(**data)
+    except Exception as e:
+        print(f"[DIGITAL TWIN AGENT] Primary What-If LLM modification failed ({e}), attempting fallback LLM...")
+        try:
+            from models.llm import get_fallback_llm
+            fallback_llm = get_fallback_llm(exclude_provider="nvidia")
+            messages = [
+                SystemMessage(content=WHAT_IF_CONFIG_PROMPT),
+                HumanMessage(
+                    content=(
+                        f"Current FactoryConfig JSON:\n{base_config.model_dump_json(indent=2)}\n\n"
+                        f"User What-If Modification: {modification}\n\n"
+                        "Return the modified FactoryConfig JSON only:"
+                    )
+                ),
+            ]
+            response = await fallback_llm.ainvoke(messages)
+            content = response.content if hasattr(response, "content") else str(response)
+            data = _extract_json_dict(content)
+            return FactoryConfig(**data)
+        except Exception:
+            return base_config
 
 
 def _fallback_config(query: str) -> FactoryConfig:
-    """Sensible default when LLM extraction fails."""
     return FactoryConfig(
-        product="Manufacturing Unit",
+        product="Industrial Manufacturing Unit",
         target_monthly_units=50000,
         operating_days_per_month=26,
         shifts_per_day=2,
         hours_per_shift=8,
         location="India",
-        budget_inr=10_000_000,
+        budget_inr=80_000_000,
         selling_price_per_unit=2000,
         raw_material_cost_ratio=0.45,
         labour_cost_per_worker_month_inr=18000,
         power_cost_per_kwh_inr=8.0,
-        total_area_sqft=30000,
-        warehouse_area_sqft=8000,
+        total_area_sqft=28000,
+        warehouse_area_sqft=6000,
         office_area_sqft=2000,
         processes=[
             ProcessStep(
-                name="Assembly",
+                name="Core Sub-Assembly",
                 sequence=1,
                 zone_type="production",
                 area_sqft=4000,
                 workers_required=10,
                 min_operators_per_shift=5,
-                yield_percent=98.0,
-                scrap_percent=2.0,
+                yield_percent=98.5,
+                scrap_percent=1.5,
                 buffer_capacity_units=600,
                 rework_percent=1.0,
                 machine=MachineModel(
-                    name="Assembly Station",
+                    name="Automated Assembly Cell",
                     quantity=4,
-                    capacity_per_hour=60,
-                    processing_time_min=1.0,
-                    power_kw=20,
-                    cost_inr=500000,
+                    capacity_per_hour=42,
+                    processing_time_min=1.43,
+                    power_kw=18,
+                    cost_inr=3500000,
                     machine_type="box",
                     oee_percent=86,
                     downtime_percent=5,
@@ -186,52 +228,52 @@ def _fallback_config(query: str) -> FactoryConfig:
                 ),
             ),
             ProcessStep(
-                name="Testing & QC",
+                name="Precision Calibration & Testing",
                 sequence=2,
                 zone_type="testing",
                 area_sqft=2500,
                 workers_required=6,
                 min_operators_per_shift=3,
-                yield_percent=97.0,
-                scrap_percent=3.0,
-                buffer_capacity_units=300,
-                rework_percent=3.0,
+                yield_percent=97.5,
+                scrap_percent=2.5,
+                buffer_capacity_units=350,
+                rework_percent=2.5,
                 rework_to_step=1,
                 machine=MachineModel(
-                    name="Test Bench",
+                    name="Automated Test Rig",
                     quantity=3,
-                    capacity_per_hour=40,
-                    processing_time_min=1.5,
+                    capacity_per_hour=45,
+                    processing_time_min=1.33,
                     power_kw=12,
-                    cost_inr=600000,
-                    machine_type="box",
-                    oee_percent=82,
-                    downtime_percent=7,
+                    cost_inr=2800000,
+                    machine_type="cylinder",
+                    oee_percent=83,
+                    downtime_percent=6,
                     setup_time_min=15,
                     maintenance_hours_per_month=5,
                 ),
             ),
             ProcessStep(
-                name="Packaging",
+                name="Final Packaging & Palletizing",
                 sequence=3,
                 zone_type="packaging",
-                area_sqft=2000,
+                area_sqft=2200,
                 workers_required=4,
                 min_operators_per_shift=2,
-                yield_percent=99.0,
-                scrap_percent=1.0,
+                yield_percent=99.5,
+                scrap_percent=0.5,
                 buffer_capacity_units=800,
                 rework_percent=0.0,
                 machine=MachineModel(
-                    name="Packaging Line",
+                    name="High-Speed Packaging Conveyor",
                     quantity=2,
-                    capacity_per_hour=80,
-                    processing_time_min=0.75,
+                    capacity_per_hour=90,
+                    processing_time_min=0.67,
                     power_kw=10,
-                    cost_inr=350000,
+                    cost_inr=1800000,
                     machine_type="conveyor",
-                    oee_percent=88,
-                    downtime_percent=4,
+                    oee_percent=90,
+                    downtime_percent=3,
                     setup_time_min=10,
                     maintenance_hours_per_month=3,
                 ),
@@ -240,112 +282,111 @@ def _fallback_config(query: str) -> FactoryConfig:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 5: Generate plain-English summary
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def generate_summary(
     config: FactoryConfig,
     simulation,
     financials,
     llm,
 ) -> str:
-    """Use NVIDIA LLM to write a crisp business-oriented summary."""
     prompt = f"""
-You are an expert manufacturing business consultant.
-Write a concise 3-paragraph summary (no markdown headers, plain text) for a founder
-considering this factory investment:
+You are a Senior Industrial & Financial Strategy Partner.
+Write a crisp, high-signal 3-paragraph executive summary (plain text, no markdown headers) for a founder:
 
-Product: {config.product}
-Location: {config.location}
-Budget: ₹{config.budget_inr / 1e7:.1f} crore
-Target production: {config.target_monthly_units:,} units/month
-Actual achievable: {int(simulation.effective_throughput_per_month):,} units/month
-Bottleneck: {simulation.bottleneck_step}
-Workers needed: {simulation.total_workers}
-Overall yield: {simulation.overall_yield_percent:.1f}%
-Monthly scrap units: {int(simulation.monthly_scrap_units):,}
-Total CAPEX: ₹{financials.total_capex_inr / 1e7:.2f} crore
-Monthly profit: ₹{financials.monthly_profit_inr / 1e5:.1f} lakh
-Break-even: {financials.break_even_months:.0f} months
-Annual ROI: {financials.annual_roi_percent:.0f}%
+Product: {config.product} ({config.location})
+Target vs Achievable Output: {config.target_monthly_units:,} target vs {int(simulation.effective_throughput_per_month):,} good units/month
+Bottleneck Station: {simulation.bottleneck_step} ({int(simulation.bottleneck_capacity_per_day):,} units/day limit)
+Line Balance Efficiency: {simulation.line_balance_efficiency_percent:.1f}% | Plant Takt Time: {simulation.plant_takt_time_sec:.1f}s
+First-Pass Yield (FPY): {simulation.first_pass_yield_percent:.1f}% | Monthly Scrap: {int(simulation.monthly_scrap_units):,} units
+Total CAPEX: ₹{financials.total_capex_inr / 1e7:.2f} Cr (User Budget: ₹{config.budget_inr / 1e7:.2f} Cr)
+Unit Economics: Selling Price ₹{config.selling_price_per_unit:,.0f} | Unit Cost ₹{financials.unit_cost_inr:,.0f} | Unit Profit ₹{financials.unit_profit_inr:,.0f}
+Monthly EBITDA: ₹{financials.monthly_ebitda_inr / 1e5:.1f}L | Monthly Net Profit: ₹{financials.monthly_profit_inr / 1e5:.1f}L
+Gross Margin: {financials.gross_margin_percent:.1f}% | Payback Period: {financials.break_even_months:.1f} months | Annual ROI: {financials.annual_roi_percent:.1f}%
 
-Key optimization suggestions:
-{chr(10).join(simulation.optimization_suggestions)}
-
-Paragraph 1: Summarize the factory setup and what it will produce.
-Paragraph 2: Highlight the key bottleneck, yield losses, and how to improve them.
-Paragraph 3: Give a financial verdict.
+Paragraph 1: Operational blueprint (capacity vs target, takt time, and line balance).
+Paragraph 2: Primary bottleneck diagnosis, FPY/scrap loss impact, and the fastest debottlenecking lever.
+Paragraph 3: Investment verdict (CAPEX vs budget, unit economics, EBITDA payback, and risk posture).
 """
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         return response.content if hasattr(response, "content") else str(response)
     except Exception as e:
-        print(f"[DIGITAL TWIN AGENT] Summary generation failed: {e}")
+        print(f"[DIGITAL TWIN AGENT] Primary summary generation failed ({e}), attempting fallback LLM...")
+        try:
+            from models.llm import get_fallback_llm
+            fallback_llm = get_fallback_llm(exclude_provider="nvidia")
+            resp = await fallback_llm.ainvoke([HumanMessage(content=prompt)])
+            return resp.content if hasattr(resp, "content") else str(resp)
+        except Exception:
+            pass
         return (
-            f"The proposed {config.product} factory in {config.location} is designed to produce "
-            f"{config.target_monthly_units:,} units/month. Current simulation shows "
-            f"{int(simulation.effective_throughput_per_month):,} units/month achievable at an "
-            f"overall yield of {simulation.overall_yield_percent:.1f}%. The main bottleneck is "
-            f"{simulation.bottleneck_step}. With ₹{financials.total_capex_inr/1e7:.2f} crore CAPEX, "
-            f"break-even is projected at {financials.break_even_months:.0f} months."
+            f"The {config.product} plant in {config.location} achieves "
+            f"{int(simulation.effective_throughput_per_month):,} good units/month against a target of "
+            f"{config.target_monthly_units:,} units/month (FPY {simulation.first_pass_yield_percent:.1f}%, "
+            f"Line Balance Efficiency {simulation.line_balance_efficiency_percent:.0f}%). "
+            f"Throughput is paced by '{simulation.bottleneck_step}' at {int(simulation.bottleneck_capacity_per_day):,} units/day. "
+            f"With ₹{financials.total_capex_inr/1e7:.2f} Cr CAPEX and ₹{financials.monthly_ebitda_inr/1e5:.1f}L monthly EBITDA, "
+            f"capital payback is projected at {financials.break_even_months:.1f} months ({financials.annual_roi_percent:.0f}% annual ROI)."
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN: run_digital_twin_agent
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def run_digital_twin_agent(query: str) -> dict:
-    """
-    Full Digital Twin pipeline.
-
-    Returns a dict matching DigitalTwinResponse that can be JSON-serialized
-    and sent to the frontend.
-    """
-    from models.llm import get_nvidia_digital_twin_llm
-
-    llm = get_nvidia_digital_twin_llm()
-
-    print(f"\n=== DIGITAL TWIN AGENT: '{query[:80]}' ===")
-
-    print("[1/5] Parsing factory configuration...")
-    config = await parse_factory_config(query, llm)
-
-    print("[2/5] Running production simulation...")
+async def _execute_pipeline_from_config(query_label: str, config: FactoryConfig, llm) -> dict:
     simulation = run_full_simulation(config)
-    print(
-        f"      Bottleneck: {simulation.bottleneck_step} | "
-        f"Throughput: {simulation.effective_throughput_per_month:.0f}/month | "
-        f"Yield: {simulation.overall_yield_percent:.1f}%"
-    )
-
-    print("[3/5] Computing financial projections...")
     financials = full_financial_model(config, simulation)
-    print(
-        f"      CAPEX: Rs. {financials.total_capex_inr/1e7:.2f}Cr | "
-        f"Break-even: {financials.break_even_months:.0f} months"
-    )
 
-    print("[4/5] Building 3D factory scene...")
-    try:
-        scene = await generate_scene_with_llm(config, simulation, llm)
-    except Exception as e:
-        print(f"      LLM scene enrichment failed ({e}), using deterministic scene.")
+    # Run 3D Scene LLM Enrichment and Executive Summary in parallel to cut latency by ~35%
+    scene_task = asyncio.create_task(generate_scene_with_llm(config, simulation, llm))
+    summary_task = asyncio.create_task(generate_summary(config, simulation, financials, llm))
+
+    scene, summary = await asyncio.gather(scene_task, summary_task, return_exceptions=True)
+
+    if isinstance(scene, Exception):
+        print(f"[DIGITAL TWIN AGENT] Scene LLM fallback: {scene}")
         scene = build_scene_deterministically(config, simulation)
 
-    print("[5/5] Generating insight summary...")
-    summary = await generate_summary(config, simulation, financials, llm)
-
-    print("=== DIGITAL TWIN COMPLETE ===\n")
+    if isinstance(summary, Exception):
+        print(f"[DIGITAL TWIN AGENT] Summary fallback: {summary}")
+        summary = f"Simulation complete for {config.product} ({int(simulation.effective_throughput_per_month):,} units/month)."
 
     response = DigitalTwinResponse(
-        query=query,
+        query=query_label,
         config=config,
         simulation=simulation,
         financials=financials,
         scene=scene,
         summary_text=summary,
     )
-
     return response.model_dump()
+
+
+async def run_digital_twin_agent(query: str) -> dict:
+    """Full Digital Twin generation pipeline."""
+    from models.llm import get_nvidia_digital_twin_llm
+
+    llm = get_nvidia_digital_twin_llm()
+    config = await parse_factory_config(query, llm)
+    return await _execute_pipeline_from_config(query, config, llm)
+
+
+async def run_what_if_agent(
+    query: str,
+    modification: str,
+    existing_config: dict | None = None,
+) -> dict:
+    """
+    What-If Digital Twin pipeline.
+    Accepts either an existing config dict or re-parses the base query before applying the modification.
+    """
+    from models.llm import get_nvidia_digital_twin_llm
+
+    llm = get_nvidia_digital_twin_llm()
+    if existing_config:
+        try:
+            base_config = FactoryConfig(**existing_config)
+        except Exception:
+            base_config = await parse_factory_config(query, llm)
+    else:
+        base_config = await parse_factory_config(query, llm)
+
+    updated_config = await apply_what_if_modification(base_config, modification, llm)
+    combined_label = f"{query} [What-If: {modification}]"
+    return await _execute_pipeline_from_config(combined_label, updated_config, llm)

@@ -84,7 +84,7 @@ class AskHumanInput(BaseModel):
 
 @tool("ask_human", args_schema=AskHumanInput)
 def ask_human(question: str) -> str:
-    """Use this tool to ask the user a clarifying question when you are missing critical information. Execution will pause until the user answers."""
+    """Use this tool to ask the user a clarifying question when critical details (such as total investment budget, production scale/capacity, or factory location) are missing or ambiguous."""
     print(f"\n[TOOL CALLED] -> ask_human: {question}")
     answer = interrupt({"action": "ask_human", "question": question})
     return f"User answered: {answer}"
@@ -155,7 +155,7 @@ shared_tools_list = [
     industrial_land_search,
     # report_generator,
     citation_engine,
-    ask_human
+    ask_human,
 ]
 
 

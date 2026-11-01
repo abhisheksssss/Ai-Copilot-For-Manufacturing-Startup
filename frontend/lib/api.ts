@@ -102,3 +102,92 @@ export async function generatePlan(
   });
 }
 
+export type BackendPlanItem = {
+  id: string;
+  query: string;
+  title?: string;
+  created_at: string;
+  plan_data: PlanResponse;
+};
+
+export async function fetchUserPlans(token: string): Promise<BackendPlanItem[]> {
+  return request<BackendPlanItem[]>("/api/plans", {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function deleteUserPlan(planId: string, token: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`/api/plans/${planId}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export async function clearAllUserPlans(token: string): Promise<{ status: string }> {
+  return request<{ status: string }>("/api/plans", {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+}
+
+export type LivePlace = {
+  source: "google_places";
+  place_id?: string;
+  name?: string;
+  formatted_address?: string;
+  latitude?: number;
+  longitude?: number;
+  business_status?: string;
+  rating?: number;
+  user_rating_count?: number;
+  website_uri?: string;
+  maps_uri?: string;
+};
+
+export type IndustryLocation = {
+  id: string;
+  name: string;
+  state: string;
+  district: string;
+  sector: string;
+  industrial_park_type: string;
+  park_type: string;
+  land_category: string;
+  land_available_hectares: number;
+  total_land_hectares: number;
+  plug_and_play: boolean;
+  updated_at: string;
+  score: number;
+  match_reasons: string[];
+  maps_url: string;
+  live_place: LivePlace | null;
+  summary: string;
+};
+
+export type LocationSearchResponse = {
+  query: string;
+  total_catalogue_locations: number;
+  google_places_enrichment: "enabled" | "not_configured";
+  results: IndustryLocation[];
+  disclaimer: string;
+};
+
+export async function searchIndustryLocations(
+  query: string,
+  token: string,
+  options: { limit?: number; enrich?: boolean } = {},
+) {
+  return request<LocationSearchResponse>("/api/locations/search", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ query, limit: options.limit ?? 5, enrich: options.enrich ?? true }),
+  });
+}
+
+

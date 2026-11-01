@@ -2,6 +2,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
+from langgraph.errors import GraphInterrupt
 from psycopg_pool import AsyncConnectionPool
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,6 +14,11 @@ from models.llm import (
     get_openrouter_llm,
     get_mistral_llm,
     get_openrouter_llm2,
+    get_openrouter_llm3,
+    get_planning_llm,
+    get_manufacturing_llm,
+    get_scheme_llm,
+    get_research_llm,
     get_fallback_llm,
     get_gemini_llm,
     get_nvidia_llm2
@@ -41,9 +47,9 @@ class RouterOutput(BaseModel):
         default=None,
         description="If the user's query is basic (e.g., 'hi', 'who are you') and requires NO specialist agents, provide the final answer to the user here."
     )
-    use_history: bool | str = Field(
+    use_history: bool = Field(
         default=False,
-        description="Set to true ONLY IF the user's query depends on or refers to past context/history (e.g. 'tell me more about it', 'what about the second option'). Otherwise false."
+        description="Always false for factory planner as each plan is generated fresh."
     )
 
 async def router_node(state: AgentState):
@@ -144,7 +150,7 @@ async def router_node(state: AgentState):
                 1. If the request is within the supported scope:
                 - Return the required specialist agents.
                 - Leave direct_answer empty.
-                - Set use_history to true ONLY if the user is referring to a previous topic.
+                - Every factory plan is a standalone, independent plan.
 
                 2. If the request is a simple greeting
                 (e.g. "Hi", "Hello", "Good Morning"):
@@ -239,69 +245,120 @@ async def router_node(state: AgentState):
     if not chosen and not result.direct_answer.strip():
          chosen = ["planning", "manufacturing", "scheme", "research"]
          
-    use_history_val = str(result.use_history).strip().lower() == "true"
-         
-    print(f"   -> Selected Agents: {chosen}, Use History: {use_history_val}")
-    return {"required_agents": chosen, "use_history": use_history_val, "messages": [f"Router selected agents: {chosen}. Use history: {use_history_val}"]}
+    print(f"   -> Selected Agents: {chosen}")
+    return {"required_agents": chosen, "use_history": False, "messages": [f"Router selected agents: {chosen}."]}
 
 
 
 
-async def _clean_subagent_output(response: dict, user_query: str, llm) -> str:
+def _to_text(content) -> str:
+    """Helper to safely extract string text from string, dict, or list of message content blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and "text" in item:
+                parts.append(str(item["text"]))
+        return "".join(parts)
+    return str(content or "")
+
+
+async def _clean_subagent_output(
+    response: dict,
+    user_query: str,
+    llm,
+    agent_type: str = "Market & Supplier Research"
+) -> str:
     """
-    Cleans sub-agent response and prevents 'Sorry, need more steps' default fallbacks
-    by synthesizing collected tool outputs into a clean Markdown report.
+    Cleans sub-agent response and ensures a rich Markdown report is ALWAYS generated.
+    If the agent ended on a tool execution, hit step limits, or produced incomplete text,
+    it automatically synthesizes all collected tool outputs into a structured Markdown report.
     """
     messages = response.get("messages", [])
     if not messages:
-        return "Report unavailable."
+        return f"{agent_type} report unavailable."
 
-    last_msg = messages[-1]
-    final_output = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+    # Look backwards for the latest genuine AIMessage with text content and NO pending tool calls
+    candidate_output = ""
+    for msg in reversed(messages):
+        msg_type = getattr(msg, "type", "") or msg.__class__.__name__.lower()
+        if "ai" in msg_type or "assistant" in msg_type:
+            tool_calls = getattr(msg, "tool_calls", None)
+            raw_content = getattr(msg, "content", "")
+            text_content = _to_text(raw_content).strip()
+            if text_content and not tool_calls:
+                candidate_output = text_content
+                break
 
-    if "Sorry, need more steps" in final_output or not final_output.strip():
-        print(f"[RECOVERY] Sub-agent hit step limit. Synthesizing report from collected tool outputs for '{user_query}'...")
-        collected = []
-        for msg in messages:
-            content = getattr(msg, "content", "")
-            if content and not isinstance(content, list) and len(str(content)) > 20:
-                text_str = str(content)
-                if "Sorry, need more steps" not in text_str and "system" not in text_str.lower()[:30]:
-                    collected.append(text_str[:1000])
+    # Determine if synthesis is needed
+    needs_synthesis = (
+        not candidate_output
+        or len(candidate_output) < 250
+        or "Sorry, need more steps" in candidate_output
+        or candidate_output.startswith("Error")
+        or candidate_output.startswith("[INFO]")
+        or candidate_output.startswith("[TOOL")
+    )
 
-        if collected:
-            synthesis_prompt = (
-                f"You are an expert industrial research analyst.\n"
-                f"Synthesize a comprehensive, professional Markdown report for the request: '{user_query}'\n"
-                f"Use the following collected research data points:\n\n"
-                + "\n\n---\n\n".join(collected)
-            )
+    if not needs_synthesis:
+        return candidate_output
+
+    print(f"[RECOVERY] Incomplete output detected for {agent_type} (len={len(candidate_output)}). Synthesizing comprehensive report from research data...")
+    collected = []
+    for msg in messages:
+        content = getattr(msg, "content", "")
+        text_str = _to_text(content).strip()
+        if text_str and len(text_str) > 20 and not text_str.lower().startswith("system:"):
+            if "Sorry, need more steps" not in text_str and not text_str.startswith("[INFO]"):
+                collected.append(text_str[:1500])
+
+    if collected:
+        synthesis_prompt = (
+            f"You are an expert industrial {agent_type} analyst.\n"
+            f"Synthesize a comprehensive, professional Markdown report for the request: '{user_query}'\n"
+            f"Structure the report clearly with headers and bullet points:\n"
+            f"1. Executive Summary & Market Intelligence (TAM/SAM/SOM, CAGR, regional demand)\n"
+            f"2. Competitive Landscape & Key Players in India (Market share, positioning)\n"
+            f"3. Verified Machinery & Equipment Suppliers (Name, Location/Industrial Area, Equipment Specs, Estimated Pricing, Contact/Website)\n"
+            f"4. Supply Chain Sourcing & Raw Materials Strategy\n"
+            f"5. Industry Trends, BIS Quality Standards & Strategic Outlook\n\n"
+            f"Use the following collected research and tool data:\n\n"
+            + "\n\n---\n\n".join(collected)
+        )
+        try:
+            syn_resp = await llm.ainvoke([
+                SystemMessage(content="Output ONLY a clean, comprehensive, well-formatted Markdown report with clear headers and bullet points. Do not include raw JSON or search snippets."),
+                HumanMessage(content=synthesis_prompt)
+            ])
+            return _to_text(syn_resp.content)
+        except Exception as ex:
+            print(f"[WARNING] Primary synthesis failed: {ex}. Retrying with fallback LLM...")
             try:
-                syn_resp = await llm.ainvoke([
-                    SystemMessage(content="Output ONLY a clean, well-formatted Markdown report with clear headers and bullet points. Do not include raw JSON or search snippets."),
+                fallback_llm = get_fallback_llm()
+                syn_resp = await fallback_llm.ainvoke([
+                    SystemMessage(content="Output ONLY a clean, comprehensive, well-formatted Markdown report with clear headers and bullet points."),
                     HumanMessage(content=synthesis_prompt)
                 ])
-                final_output = syn_resp.content
-            except Exception as ex:
-                print(f"[WARNING] Sub-agent fallback synthesis failed: {ex}")
-                final_output = "\n\n".join(collected)
+                return _to_text(syn_resp.content)
+            except Exception as ex2:
+                print(f"[ERROR] Fallback synthesis failed: {ex2}")
+                return "\n\n".join(collected)
 
-    return final_output
+    return candidate_output or f"{agent_type} report unavailable."
 
 
 async def planning_node(state: AgentState):
     print("--- PLANNING AGENT (Roadmap + costs) ---")
     user_query = state.get("user_query", "")
-    if state.get("use_history") and state.get("semantic_context"):
-        ctx = str(state.get("semantic_context", ""))[:800]
-        query = f"CURRENT USER REQUEST: {user_query}\n\n[Reference History (Do NOT answer this old request)]: {ctx}"
-    else:
-        query = user_query
+    query = user_query
 
     try:
-        llm = get_openrouter_llm2()
+        llm = get_planning_llm()
     except Exception:
-        llm = get_default_LLM()
+        llm = get_fallback_llm()
 
     all_planning_tools = planning_tools_list + shared_tools_list
     planning_agent = create_react_agent(llm, tools=all_planning_tools)
@@ -321,6 +378,8 @@ async def planning_node(state: AgentState):
             {"messages": [system_prompt, HumanMessage(content=query)]},
             config={"recursion_limit": 15}
         )
+    except GraphInterrupt:
+        raise
     except Exception as e:
         print(f"[WARNING] Planning Agent primary LLM failed: {e}. Retrying with fallback LLM...")
         fallback_llm = get_fallback_llm()
@@ -330,11 +389,13 @@ async def planning_node(state: AgentState):
                 {"messages": [system_prompt, HumanMessage(content=query)]},
                 config={"recursion_limit": 15}
             )
+        except GraphInterrupt:
+            raise
         except Exception as e2:
             print(f"[ERROR] Planning Agent fallback LLM failed: {e2}")
             response = {"messages": [SystemMessage(content=f"Error executing Planning Agent: {e2}")]}
 
-    final_output = await _clean_subagent_output(response, user_query, llm)
+    final_output = await _clean_subagent_output(response, user_query, llm, agent_type="Planning & Financial Strategy")
     return {
         "planning_result": {"report": final_output},
         "messages": ["Planning Agent successfully generated the roadmap and costs."]
@@ -344,14 +405,27 @@ async def planning_node(state: AgentState):
 async def manufacturing_node(state: AgentState):
     print("--- MANUFACTURING AGENT (Process + Machinery + Setup) ---")
     user_query = state.get("user_query", "")
-    if state.get("use_history") and state.get("semantic_context"):
-        ctx = str(state.get("semantic_context", ""))[:800]
-        query = f"CURRENT USER REQUEST: {user_query}\n\n[Reference History (Do NOT answer this old request)]: {ctx}"
-    else:
-        query = user_query
+
+    # Retrieve context from preceding Planning Agent in the series
+    planning_res = state.get("planning_result")
+    planning_report = ""
+    if isinstance(planning_res, dict):
+        planning_report = planning_res.get("report", "")
+    elif isinstance(planning_res, str):
+        planning_report = planning_res
+
+    query = user_query
+    if planning_report and not planning_report.startswith("Error"):
+        query = (
+            f"{user_query}\n\n"
+            f"--- CONTEXT FROM PRECEDING PLANNING AGENT ---\n"
+            f"Align your machinery selection, factory layout, and BOM with this established plan:\n"
+            f"{planning_report[:2000]}\n"
+            f"----------------------------------------------"
+        )
 
     try:
-        llm = get_default_LLM()
+        llm = get_manufacturing_llm()
     except Exception:
         llm = get_fallback_llm()
 
@@ -373,6 +447,8 @@ async def manufacturing_node(state: AgentState):
             {"messages": [system_prompt, HumanMessage(content=query)]},
             config={"recursion_limit": 15}
         )
+    except GraphInterrupt:
+        raise
     except Exception as e:
         print(f"[WARNING] Manufacturing Agent primary LLM failed: {e}. Retrying with fallback LLM...")
         fallback_llm = get_fallback_llm()
@@ -382,11 +458,13 @@ async def manufacturing_node(state: AgentState):
                 {"messages": [system_prompt, HumanMessage(content=query)]},
                 config={"recursion_limit": 15}
             )
+        except GraphInterrupt:
+            raise
         except Exception as e2:
             print(f"[ERROR] Manufacturing Agent fallback LLM failed: {e2}")
             response = {"messages": [SystemMessage(content=f"Error executing Manufacturing Agent: {e2}")]}
 
-    final_output = await _clean_subagent_output(response, user_query, llm)
+    final_output = await _clean_subagent_output(response, user_query, llm, agent_type="Manufacturing & Factory Design")
     return {
         "manufacturing_result": {"report": final_output},
         "messages": ["Manufacturing Agent successfully designed the production line."]
@@ -396,16 +474,33 @@ async def manufacturing_node(state: AgentState):
 async def scheme_node(state: AgentState):
     print("--- SCHEME AGENT (Govt + pvt funding) ---")
     user_query = state.get("user_query", "")
-    if state.get("use_history") and state.get("semantic_context"):
-        ctx = str(state.get("semantic_context", ""))[:800]
-        query = f"CURRENT USER REQUEST: {user_query}\n\n[Reference History (Do NOT answer this old request)]: {ctx}"
-    else:
-        query = user_query
+
+    # Retrieve context from preceding Planning & Manufacturing Agents in the series
+    planning_res = state.get("planning_result")
+    mfg_res = state.get("manufacturing_result")
+    planning_report = planning_res.get("report", "") if isinstance(planning_res, dict) else str(planning_res or "")
+    mfg_report = mfg_res.get("report", "") if isinstance(mfg_res, dict) else str(mfg_res or "")
+
+    context_parts = []
+    if planning_report and not planning_report.startswith("Error"):
+        context_parts.append(f"Planning Context (Budget, Factory Scale, Location):\n{planning_report[:1200]}")
+    if mfg_report and not mfg_report.startswith("Error"):
+        context_parts.append(f"Manufacturing Context (Machinery & Capex):\n{mfg_report[:1200]}")
+
+    query = user_query
+    if context_parts:
+        query = (
+            f"{user_query}\n\n"
+            f"--- CONTEXT FROM PRECEDING AGENTS ---\n"
+            f"Calculate exact eligible subsidies, schemes, and financing for these specifications:\n"
+            + "\n\n".join(context_parts) + "\n"
+            f"------------------------------------"
+        )
 
     try:
-        llm = get_openrouter_llm()
+        llm = get_scheme_llm()
     except Exception:
-        llm = get_default_LLM()
+        llm = get_fallback_llm()
 
     all_scheme_tools = scheme_tools_list + shared_tools_list
     scheme_agent = create_react_agent(llm, tools=all_scheme_tools)
@@ -425,6 +520,8 @@ async def scheme_node(state: AgentState):
             {"messages": [system_prompt, HumanMessage(content=query)]},
             config={"recursion_limit": 15}
         )
+    except GraphInterrupt:
+        raise
     except Exception as e:
         print(f"[WARNING] Scheme Agent primary LLM failed: {e}. Retrying with fallback LLM...")
         fallback_llm = get_fallback_llm()
@@ -434,11 +531,13 @@ async def scheme_node(state: AgentState):
                 {"messages": [system_prompt, HumanMessage(content=query)]},
                 config={"recursion_limit": 15}
             )
+        except GraphInterrupt:
+            raise
         except Exception as e2:
             print(f"[ERROR] Scheme Agent fallback LLM failed: {e2}")
             response = {"messages": [SystemMessage(content=f"Error executing Scheme Agent: {e2}")]}
 
-    final_output = await _clean_subagent_output(response, user_query, llm)
+    final_output = await _clean_subagent_output(response, user_query, llm, agent_type="Government Schemes & Subsidies")
     return {
         "scheme_result": {"report": final_output},
         "messages": ["Scheme Agent successfully found applicable schemes and funding."]
@@ -448,14 +547,31 @@ async def scheme_node(state: AgentState):
 async def research_node(state: AgentState):
     print("--- RESEARCH AGENT (Market + trends) ---")
     user_query = state.get("user_query", "")
-    if state.get("use_history") and state.get("semantic_context"):
-        ctx = str(state.get("semantic_context", ""))[:800]
-        query = f"CURRENT USER REQUEST: {user_query}\n\n[Reference History (Do NOT answer this old request)]: {ctx}"
-    else:
-        query = user_query
+
+    # Retrieve context from preceding Planning & Manufacturing Agents in the series
+    planning_res = state.get("planning_result")
+    mfg_res = state.get("manufacturing_result")
+    planning_report = planning_res.get("report", "") if isinstance(planning_res, dict) else str(planning_res or "")
+    mfg_report = mfg_res.get("report", "") if isinstance(mfg_res, dict) else str(mfg_res or "")
+
+    context_parts = []
+    if mfg_report and not mfg_report.startswith("Error"):
+        context_parts.append(f"Manufacturing Equipment & Key Machinery to Find Suppliers For:\n{mfg_report[:1200]}")
+    if planning_report and not planning_report.startswith("Error"):
+        context_parts.append(f"Target Scale and Location:\n{planning_report[:600]}")
+
+    query = user_query
+    if context_parts:
+        query = (
+            f"{user_query}\n\n"
+            f"--- CONTEXT FROM PRECEDING AGENTS ---\n"
+            f"Find specific suppliers and market intelligence matching these equipment and setup details:\n"
+            + "\n\n".join(context_parts) + "\n"
+            f"------------------------------------"
+        )
 
     try:
-        llm = get_default_LLM()
+        llm = get_research_llm()
     except Exception:
         llm = get_fallback_llm()
 
@@ -463,15 +579,20 @@ async def research_node(state: AgentState):
     research_agent = create_react_agent(llm, tools=all_research_tools)
 
     system_prompt = SystemMessage(content=(
-        f"You are an expert Research Agent (Internet Intelligence).\n"
+        f"You are an expert Research Agent (Internet Intelligence & Supplier Discovery).\n"
         f"CRITICAL: Focus ONLY on the Product, Industry, and Location from the CURRENT USER REQUEST ('{user_query}').\n"
         f"Do NOT generate a report for any past product in history.\n"
-        f"You MUST use your tools to analyze Competitors, Market Size (TAM/SAM/SOM), find Suppliers, "
-        f"and get the latest Industry Trends and News.\n\n"
+        f"You MUST use your tools (supplier_search, web_search, market_size_calculator, competitor_analyzer) to gather live data.\n"
+        f"IMPORTANT: After using tools, YOU MUST OUTPUT A COMPLETE, DETAILED MARKDOWN REPORT containing:\n"
+        f"1. Market Overview & Size (TAM, SAM, SOM) with growth forecasts (CAGR)\n"
+        f"2. Competitive Landscape & Top Manufacturers in India\n"
+        f"3. Verified Machinery & Equipment Suppliers in or near the target location (Name, Location, Specs, Pricing/Contact)\n"
+        f"4. Supply Chain Sourcing & Raw Materials Strategy\n"
+        f"5. Key Industry Trends & Quality Standards (BIS/ISO)\n\n"
         f"RANKING RULES FOR SUPPLIERS:\n"
         f"1. When listing suppliers, rank actual equipment manufacturers and machinery suppliers in the target location FIRST.\n"
         f"2. Present verified B2B vendors (IndiaMART, TradeIndia, verified corporate domains) with specifications and pricing.\n"
-        f"3. NEVER rank generic government portals, policy homepages, or non-supplier landing pages as top suppliers. Place general portal links under 'Additional Resources' at the bottom.\n"
+        f"3. NEVER rank generic government portals or policy homepages as top suppliers.\n"
         f"Summarize all findings beautifully in Markdown format."
     ))
 
@@ -479,8 +600,10 @@ async def research_node(state: AgentState):
     try:
         response = await research_agent.ainvoke(
             {"messages": [system_prompt, HumanMessage(content=query)]},
-            config={"recursion_limit": 25}
+            config={"recursion_limit": 30}
         )
+    except GraphInterrupt:
+        raise
     except Exception as e:
         print(f"[WARNING] Research Agent primary LLM failed: {e}. Retrying with fallback LLM...")
         fallback_llm = get_fallback_llm()
@@ -488,13 +611,15 @@ async def research_node(state: AgentState):
         try:
             response = await fallback_agent.ainvoke(
                 {"messages": [system_prompt, HumanMessage(content=query)]},
-                config={"recursion_limit": 25}
+                config={"recursion_limit": 30}
             )
+        except GraphInterrupt:
+            raise
         except Exception as e2:
             print(f"[ERROR] Research Agent fallback LLM failed: {e2}")
             response = {"messages": [SystemMessage(content=f"Error executing Research Agent: {e2}")]}
 
-    final_output = await _clean_subagent_output(response, user_query, llm)
+    final_output = await _clean_subagent_output(response, user_query, llm, agent_type="Market Intelligence & Supplier Discovery")
     return {
         "research_result": {"report": final_output},
         "messages": ["Research Agent successfully analyzed the market and competitors."]
@@ -541,33 +666,111 @@ async def finalize_node(state: AgentState):
 # 1. Initialize the Orchestrator Graph
 orchestrator_workflow = StateGraph(AgentState)
 
-# 2. Add nodes (The 4 Specialist Agents + Judge + Combiner)
+# 2. Add nodes (The 4 Specialist Agents + Combiner)
 orchestrator_workflow.add_node("router", router_node)
 orchestrator_workflow.add_node("planning", planning_node)
 orchestrator_workflow.add_node("manufacturing", manufacturing_node)
 orchestrator_workflow.add_node("scheme", scheme_node)
 orchestrator_workflow.add_node("research", research_node)
-orchestrator_workflow.add_node("judge", judge_node)
+# orchestrator_workflow.add_node("judge", judge_node)
 orchestrator_workflow.add_node("finalize", finalize_node)
 
 
-def route_agents(state: AgentState):
-    # LangGraph will run whatever list of nodes this returns simultaneously
-    return state.get("required_agents", ["planning", "manufacturing", "scheme", "research"])
+def _get_required_set(state: AgentState) -> set:
+    req = state.get("required_agents")
+    if req is None:
+        return {"planning", "manufacturing", "scheme", "research"}
+    return set(req)
 
 
-# 3. Define the routing / workflow
+def route_after_router(state: AgentState):
+    req = _get_required_set(state)
+    if not req:
+        return "finalize"
+    if "planning" in req:
+        return "planning"
+    if "manufacturing" in req:
+        return "manufacturing"
+    if "scheme" in req:
+        return "scheme"
+    if "research" in req:
+        return "research"
+    return "finalize"
+
+
+def route_after_planning(state: AgentState):
+    req = _get_required_set(state)
+    if "manufacturing" in req:
+        return "manufacturing"
+    if "scheme" in req:
+        return "scheme"
+    if "research" in req:
+        return "research"
+    return "finalize"
+
+
+def route_after_manufacturing(state: AgentState):
+    req = _get_required_set(state)
+    if "scheme" in req:
+        return "scheme"
+    if "research" in req:
+        return "research"
+    return "finalize"
+
+
+def route_after_scheme(state: AgentState):
+    req = _get_required_set(state)
+    if "research" in req:
+        return "research"
+    return "finalize"
+
+
+# 3. Define the sequential (series) routing / workflow
 orchestrator_workflow.set_entry_point("router")
+
 orchestrator_workflow.add_conditional_edges(
     "router",
-    route_agents,
-    ["planning", "manufacturing", "scheme", "research"]
+    route_after_router,
+    {
+        "planning": "planning",
+        "manufacturing": "manufacturing",
+        "scheme": "scheme",
+        "research": "research",
+        "finalize": "finalize",
+    }
 )
-orchestrator_workflow.add_edge("planning", "judge")
-orchestrator_workflow.add_edge("manufacturing", "judge")
-orchestrator_workflow.add_edge("scheme", "judge")
-orchestrator_workflow.add_edge("research", "judge")
-orchestrator_workflow.add_edge("judge", "finalize")
+
+orchestrator_workflow.add_conditional_edges(
+    "planning",
+    route_after_planning,
+    {
+        "manufacturing": "manufacturing",
+        "scheme": "scheme",
+        "research": "research",
+        "finalize": "finalize",
+    }
+)
+
+orchestrator_workflow.add_conditional_edges(
+    "manufacturing",
+    route_after_manufacturing,
+    {
+        "scheme": "scheme",
+        "research": "research",
+        "finalize": "finalize",
+    }
+)
+
+orchestrator_workflow.add_conditional_edges(
+    "scheme",
+    route_after_scheme,
+    {
+        "research": "research",
+        "finalize": "finalize",
+    }
+)
+
+orchestrator_workflow.add_edge("research", "finalize")
 orchestrator_workflow.add_edge("finalize", END)
 # 4. Compile the Graph
 
@@ -576,18 +779,24 @@ orchestrator_workflow.add_edge("finalize", END)
 # orchestrator_workflow.compile()
 
 pool: AsyncConnectionPool | None = None
+_fallback_memory_saver = MemorySaver()
 
 async def get_orchestrator_checkpointer():
-    global pool
+    global pool, _fallback_memory_saver
     db_url = getattr(settings, "DATABASE_URL", "") or ""
     if db_url.startswith("postgresql") or db_url.startswith("postgres"):
         try:
+            from core.dns_fallback import resolve_db_hostaddr
+            resolved_db_url = resolve_db_hostaddr(db_url)
             if pool is not None and getattr(pool, "closed", False):
                 pool = None
             if pool is None:
                 pool = AsyncConnectionPool(
-                    conninfo=db_url,
-                    max_size=20,
+                    conninfo=resolved_db_url,
+                    max_size=10,
+                    max_idle=30.0,
+                    max_lifetime=180.0,
+                    check=AsyncConnectionPool.check_connection,
                     kwargs={"autocommit": True, "prepare_threshold": 0},
                     open=False
                 )
@@ -598,18 +807,21 @@ async def get_orchestrator_checkpointer():
         except Exception as e:
             print(f"[WARNING] Postgres checkpointer pool connection failed: {e}. Falling back to MemorySaver.")
             pool = None
-            return MemorySaver()
-    return MemorySaver()
+            return _fallback_memory_saver
+    return _fallback_memory_saver
 
 
 async def run_orchestrator(query: str, thread_id: str = "default_session"):
     """
-    Streaming Entry Point to trigger the AI brain and yield Server-Sent Events.
+    Entry Point for standalone multi-agent factory planning.
+    Note: Previous memory is not passed to the planner; memory is reserved for the Chat feature.
     """
-
-    semantic_context = get_semantic_context(user_id=thread_id, current_query=query, k=3)
-
-    inputs = {"user_query": query, "semantic_context": semantic_context, "messages": []}
+    inputs = {
+        "user_query": query,
+        "semantic_context": "",
+        "use_history": False,
+        "messages": [],
+    }
 
     checkpointer = await get_orchestrator_checkpointer()
     graph = orchestrator_workflow.compile(checkpointer=checkpointer)
@@ -622,9 +834,9 @@ async def run_orchestrator(query: str, thread_id: str = "default_session"):
 
     result = await graph.ainvoke(inputs, config=config)
     
-    final_response_text = str(result.get("final_report", "Business plan generated."))
-    
-    save_interaction_to_vector_db(user_id=thread_id, query=query, response=final_response_text)
+    final_report = result.get("final_report")
+    if isinstance(final_report, dict):
+        save_workflow_to_vector_db(user_id=thread_id, query=query, final_report=final_report)
 
     return result
 
@@ -642,21 +854,67 @@ def _extract_content_text(content) -> str:
         return "".join(text_parts)
     elif hasattr(content, "text"):
         return str(content.text)
-    return ""
+def save_factory_plan_to_db(user_id: str, query: str, final_report: dict):
+    """Saves the final generated factory plan into the relational database table."""
+    if not user_id or not final_report:
+        return None
+    from core.database import SessionLocal, FallbackSessionLocal
+    from models.plan import FactoryPlan
+    import uuid
+    import json
+    
+    db = None
+    try:
+        try:
+            db = SessionLocal()
+        except Exception:
+            db = FallbackSessionLocal()
+            
+        plan_id = f"plan_{uuid.uuid4().hex[:12]}"
+        plan_record = FactoryPlan(
+            id=plan_id,
+            user_id=str(user_id),
+            query=query.strip(),
+            title=query.strip()[:80],
+            plan_data=json.dumps({"final_report": final_report}),
+        )
+        db.add(plan_record)
+        db.commit()
+        db.refresh(plan_record)
+        print(f"[INFO] Saved factory plan '{plan_id}' to database for user '{user_id}'.")
+        return plan_record
+    except Exception as e:
+        print(f"[WARNING] Failed to save factory plan to database: {e}")
+        return None
+    finally:
+        if db:
+            db.close()
 
 
 async def run_orchestrator_stream(query: str, thread_id: str = "default_session"):
     """
     Streaming Entry Point to trigger the AI brain and yield Server-Sent Events.
-    Note: As per requirements, user history/context is NOT passed to the orchestrator.
+    Note: As per requirements, previous memory is NOT passed to the orchestrator;
+    memory is reserved exclusively for the Chat feature.
     """
     checkpointer = await get_orchestrator_checkpointer()
     graph = orchestrator_workflow.compile(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": thread_id}}
 
-    inputs = {"user_query": query, "semantic_context": "", "messages": []}
+    inputs = {
+        "user_query": query,
+        "semantic_context": "",
+        "use_history": False,
+        "messages": [],
+        "planning_result": None,
+        "manufacturing_result": None,
+        "scheme_result": None,
+        "research_result": None,
+        "judge_result": None,
+        "final_report": None,
+    }
     
-    SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research", "judge"}
+    SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research"}
 
     async for event in graph.astream_events(inputs, config=config, version="v2"):
         kind = event["event"]
@@ -703,8 +961,10 @@ async def run_orchestrator_stream(query: str, thread_id: str = "default_session"
     if final_report:
         # Save generated workflow associated with this user_id for later Chatbot retrieval
         save_workflow_to_vector_db(user_id=thread_id, query=query, final_report=final_report)
+        plan_record = save_factory_plan_to_db(user_id=thread_id, query=query, final_report=final_report)
+        plan_id = plan_record.id if plan_record else None
         
-        yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': final_report}})}\n\n"
+        yield f"data: {json.dumps({'type': 'final_report', 'data': {'id': plan_id, 'final_report': final_report}})}\n\n"
 
 
 async def resume_orchestrator_stream(answer: str, thread_id: str = "default_session"):
@@ -716,7 +976,7 @@ async def resume_orchestrator_stream(answer: str, thread_id: str = "default_sess
     config = {"configurable": {"thread_id": thread_id}}
     
     inputs = Command(resume=answer)
-    SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research", "judge"}
+    SPECIALIST_NODES = {"planning", "manufacturing", "scheme", "research"}
     
     async for event in graph.astream_events(inputs, config=config, version="v2"):
         kind = event["event"]
@@ -756,8 +1016,12 @@ async def resume_orchestrator_stream(answer: str, thread_id: str = "default_sess
     final_report = final_state.values.get("final_report")
     
     if final_report:
-        final_response_text = str(final_report)
         query = final_state.values.get("user_query", "Resumed query")
-        save_interaction_to_vector_db(user_id=thread_id, query=query, response=final_response_text)
+        plan_id = None
+        if isinstance(final_report, dict):
+            save_workflow_to_vector_db(user_id=thread_id, query=query, final_report=final_report)
+            plan_record = save_factory_plan_to_db(user_id=thread_id, query=query, final_report=final_report)
+            plan_id = plan_record.id if plan_record else None
         
-        yield f"data: {json.dumps({'type': 'final_report', 'data': {'final_report': final_report}})}\n\n"
+        yield f"data: {json.dumps({'type': 'final_report', 'data': {'id': plan_id, 'final_report': final_report}})}\n\n"
+

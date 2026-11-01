@@ -5,6 +5,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 interface Props {
   children: ReactNode;
   fallback?: ReactNode;
+  resetKey?: string;
 }
 
 interface State {
@@ -26,8 +27,18 @@ export class FactoryErrorBoundary extends Component<Props, State> {
     return { hasError: true, error };
   }
 
+  componentDidUpdate(prevProps: Props) {
+    if (this.state.hasError && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ hasError: false, error: null });
+    }
+  }
+
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("[FactoryCanvas] 3D render error caught by boundary:", error, info.componentStack);
+    console.error(
+      "[FactoryCanvas] 3D render error caught by boundary:",
+      error,
+      info.componentStack
+    );
   }
 
   render() {
@@ -35,14 +46,14 @@ export class FactoryErrorBoundary extends Component<Props, State> {
       if (this.props.fallback) return this.props.fallback;
       return (
         <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-[#060b16] text-center px-8">
-          <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-6 max-w-md">
+          <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-6 max-w-md backdrop-blur-md">
             <p className="text-2xl mb-2">⚠️</p>
             <p className="text-sm font-bold text-red-400 mb-1">3D Rendering Error</p>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Your browser&apos;s WebGL context could not render the factory scene.
+              Your browser&apos;s WebGL context encountered an error while rendering the factory scene.
             </p>
             {this.state.error && (
-              <p className="mt-2 text-[10px] text-red-400/60 font-mono bg-red-500/5 rounded p-2 text-left break-all">
+              <p className="mt-2 text-[10px] text-red-400/70 font-mono bg-red-500/5 rounded p-2 text-left break-all">
                 {this.state.error.message}
               </p>
             )}

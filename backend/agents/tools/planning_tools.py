@@ -14,10 +14,10 @@ from utils.kb_lookup import (
 )
 
 try:
-    from .subtool.industrialsearch import industrial_land_search as subtool_industrial_land_search
+    from .subtools.industrialsearch import industrial_land_search as subtool_industrial_land_search
 except (ImportError, ValueError):
     try:
-        from agents.tools.subtool.industrialsearch import industrial_land_search as subtool_industrial_land_search
+        from agents.tools.subtools.industrialsearch import industrial_land_search as subtool_industrial_land_search
     except ImportError:
         subtool_industrial_land_search = None
 
@@ -25,7 +25,7 @@ except (ImportError, ValueError):
 
 class PlanningInput(BaseModel):
     product: str = Field(description="The product to be manufactured")
-    budget:  str = Field(description="Total budget e.g. '50 lakhs', '2 crore'")
+    budget:  str = Field(description="Total budget e.g. '50 lakhs', '2 crore'", default="1 crore")
 
 class LocationInput(BaseModel):
     product:  str = Field(description="The product to be manufactured")

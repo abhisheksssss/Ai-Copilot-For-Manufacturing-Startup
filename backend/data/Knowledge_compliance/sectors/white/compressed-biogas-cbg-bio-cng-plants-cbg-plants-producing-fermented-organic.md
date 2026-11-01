@@ -1,0 +1,38 @@
+---
+type: Environmental Compliance Concept
+title: "Compressed Biogas (Cbg)/Bio-Cng Plants - CBG plants producing Fermented Organic Manure (FOM) & Liquid Fermented Organic Manure (LFOM) as by-products"
+category: "White"
+pollution_index_range: "0-24.9"
+pollution_index_score: 20
+cpcb_serial_no: "W-020 (Annexure-I S.No. 67.5)"
+ministry: "Ministry of Environment, Forest and Climate Change (MoEFCC)"
+authority: "Central Pollution Control Board (CPCB) & State PCBs"
+concerned_division: "IPC-III"
+requires_cte: false
+requires_cto: false
+validity_period: "Exempt (One-Time Intimation Only)"
+etp_apcd_mandatory: false
+tags: [cpcb, white_category, compressed, biogas, cbg, bio, cng]
+timestamp: "2026-10-24T00:00:00Z"
+---
+
+# Overview
+**Compressed Biogas (Cbg)/Bio-Cng Plants - CBG plants producing Fermented Organic Manure (FOM) & Liquid Fermented Organic Manure (LFOM) as by-products** is classified under **`Annexure-I` (Industrial Sectors)**, Serial No. **`67.5`**, overseen by the **`IPC-III`** division of the Central Pollution Control Board (CPCB). Under the CPCB *Classification of Sectors into Red, Orange, Green, White and Blue Categories (January 2025)* framework, this sector is categorized as **White Category** with a Cumulative Pollution Index (PI) score of **20**.
+
+**Sector Specific Notes & Conditions:** CBG plants producing FOM & LFOM as by-products in conformity with requirements of Gazette Notification No. 2051 dated 14.07.2020 & No. 1972 dated 01.06.2021, respectively, and utilizing entire FOM & LFOM as a fertilizer or manure on land and also not discharging any waste-water, to be considered under White category, subject to verification by SPCB on case-to- case basis.
+
+# Pollution Profile & Severity Score
+- **Cumulative Pollution Index (PI):** `20` (Category Range: `0-24.9`)
+- **Water Pollution (`PIw = 0/100` | Severity: `None`):** Sub-scores `W1=0` (Oxygen Demand), `W2=0` (Toxic/Other Pollutants), `W3=0` (Wastewater/Sewage Volume).
+- **Air Pollution (`PIa = 20/100` | Severity: `Low`):** Sub-scores `A1=0` (Point Source Process Emissions), `A2=20` (Fugitive Emissions / Odour), `A3=0` (Fuel Type & Quantum).
+- **Waste Generation (`PIh = 0/100` | Severity: `None`):** Sub-scores `H1=0` (Disposal Method / Potency), `H2=0` (Hazardous / Bio-Medical Waste Quantum).
+
+# Statutory Approvals & Clearances Required
+1. **Written Intimation / Self-Declaration Undertaking to State Pollution Control Board (SPCB) / PCC (Exempt from CTE & CTO)**
+2. **Factory License (Directorate of Industrial Safety & Health - DISH, if applicable)**
+3. **Fire Safety NOC (State Fire and Rescue Services, if applicable)**
+
+# Mandatory Compliance & Mitigation Guidelines
+- **Treatment & Control Systems:** None (Practically Non-Polluting; no trade effluent or process emission treatment required)
+- **Surveillance & Inspection Frequency:** Exempt from routine Consent inspection (Intimation to SPCB/PCC only)
+- **Progressive Environmental Management (Star Rating Incentive):** Units demonstrating 100% wastewater treatment & reuse, 100% dependency on cleaner gaseous fuels (PNG/CNG/LPG/CBG/Electricity), and verifiable pollution reduction over 1 year of compliant operation are eligible for `White*` star upgradation with extended CTO validity and reduced inspection frequency under Chapter 4 of CPCB 2025 Guidelines.

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   BadgeIndianRupee,
@@ -11,10 +11,13 @@ import {
   ChevronRight,
   ClipboardCheck,
   Circle,
+  Clock,
+  Database,
   Factory,
   Loader2,
   LogOut,
   MessageSquare,
+  Plus,
   Search,
   Send,
   Sparkles,
@@ -29,7 +32,12 @@ import { useRouter } from "next/navigation";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import {
   fetchProfile,
+  fetchUserPlans,
+  deleteUserPlan,
+  clearAllUserPlans,
   type AuthResponse,
+  type BackendPlanItem,
+  type PlanResponse,
 } from "@/lib/api";
 import { useAuthStore } from "@/store/use-auth-store";
 import { useCopilotStore } from "@/store/use-copilot-store";
@@ -88,26 +96,12 @@ const PIPELINE_STEPS = [
   },
 ] as const;
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type AgentReport = { report: string };
-
-type PlanResponse = {
-  messages?: string[];
-  final_report?: {
-    planning?: AgentReport;
-    manufacturing?: AgentReport;
-    schemes?: AgentReport;
-    research?: AgentReport;
-  };
-  [key: string]: unknown;
-};
-
 // ─── Root Page ────────────────────────────────────────────────────────────────
 
 export default function PlannerPage() {
   const router = useRouter();
-  const { query, setQuery, history, addHistory, clearHistory } = useCopilotStore();
+  const queryClient = useQueryClient();
+  const { query, setQuery, addHistory, syncBackendPlans, removeHistoryItem, clearHistory } = useCopilotStore();
   const { token, user, isReady, initializeAuth, setUser, logout } = useAuthStore();
 
   const [isStreaming, setIsStreaming] = useState(false);
@@ -116,11 +110,110 @@ export default function PlannerPage() {
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [completedAgents, setCompletedAgents] = useState<Record<string, boolean>>({});
   const [result, setResult] = useState<PlanResponse | null>(null);
+  const [activePlanId, setActivePlanId] = useState<string | null>(null);
   const [showChatRedirectBanner, setShowChatRedirectBanner] = useState(true);
   const [interrupt, setInterrupt] = useState<{action: string, question: string} | null>(null);
   const [interruptAnswer, setInterruptAnswer] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Fetch plans directly from backend database
+  const plansQuery = useQuery({
+    queryKey: ["userPlans", token],
+    queryFn: () => fetchUserPlans(token as string),
+    enabled: Boolean(token),
+  });
+
+  const backendPlans = plansQuery.data ?? [];
+
+  // Synchronize backend plans with copilot store history
+  useEffect(() => {
+    if (backendPlans.length > 0) {
+      syncBackendPlans(backendPlans);
+    }
+  }, [backendPlans, syncBackendPlans]);
+
+  // Auto-restore most recent plan from backend on initial page load
+  const hasAutoLoadedRef = useRef(false);
+  useEffect(() => {
+    if (hasAutoLoadedRef.current) return;
+    if (!result && !isStreaming && backendPlans.length > 0) {
+      const latest = backendPlans[0];
+      if (latest && latest.plan_data?.final_report) {
+        setResult(latest.plan_data);
+        setQuery(latest.query);
+        setActivePlanId(latest.id);
+        setCompletedAgents({
+          planning: !!latest.plan_data.final_report?.planning,
+          manufacturing: !!latest.plan_data.final_report?.manufacturing,
+          schemes: !!latest.plan_data.final_report?.schemes,
+          research: !!latest.plan_data.final_report?.research,
+        });
+      }
+      hasAutoLoadedRef.current = true;
+    }
+  }, [backendPlans, result, isStreaming, setQuery]);
+
+  function handleStartNewPlan() {
+    if (isStreaming) return;
+    setResult(null);
+    setQuery("");
+    setStreamedText("");
+    setCompletedAgents({});
+    setActiveAgent(null);
+    setActiveTool(null);
+    setInterrupt(null);
+    setActivePlanId(null);
+    setShowChatRedirectBanner(false);
+    toast.info("Ready for a new factory plan. Describe your idea on the left.");
+  }
+
+  function handleSelectBackendPlan(plan: BackendPlanItem) {
+    if (isStreaming) return;
+    setQuery(plan.query);
+    setActivePlanId(plan.id);
+    if (plan.plan_data?.final_report) {
+      setResult(plan.plan_data);
+      setCompletedAgents({
+        planning: !!plan.plan_data.final_report?.planning,
+        manufacturing: !!plan.plan_data.final_report?.manufacturing,
+        schemes: !!plan.plan_data.final_report?.schemes,
+        research: !!plan.plan_data.final_report?.research,
+      });
+      setStreamedText("");
+      setInterrupt(null);
+      setShowChatRedirectBanner(false);
+      toast.success("Loaded saved plan from database");
+    }
+  }
+
+  async function handleDeleteBackendPlan(planId: string) {
+    if (!token) return;
+    try {
+      await deleteUserPlan(planId, token);
+      toast.success("Plan deleted from database");
+      removeHistoryItem(planId);
+      queryClient.invalidateQueries({ queryKey: ["userPlans", token] });
+      if (activePlanId === planId) {
+        handleStartNewPlan();
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to delete plan");
+    }
+  }
+
+  async function handleClearAllBackendPlans() {
+    if (!token) return;
+    try {
+      await clearAllUserPlans(token);
+      toast.success("All plans cleared from database");
+      clearHistory("planner");
+      queryClient.invalidateQueries({ queryKey: ["userPlans", token] });
+      handleStartNewPlan();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to clear plans");
+    }
+  }
 
   useEffect(() => {
     initializeAuth();
@@ -172,7 +265,7 @@ export default function PlannerPage() {
     setCompletedAgents({});
     setResult(null);
     setInterrupt(null);
-    addHistory(cleanQuery);
+    setActivePlanId(null);
 
     let wasInterrupted = false;
 
@@ -229,12 +322,23 @@ export default function PlannerPage() {
                 setStreamedText((prev) => prev + data.content);
               }
             } else if (data.type === "final_report") {
-              setResult(data.data as PlanResponse);
+              const planData = data.data as PlanResponse;
+              setResult(planData);
+              const planId = data.data?.id;
+              if (planId) {
+                setActivePlanId(planId);
+              }
+              const preview =
+                typeof planData?.final_report?.planning?.report === "string"
+                  ? planData.final_report.planning.report.slice(0, 240)
+                  : cleanQuery;
+              addHistory(cleanQuery, "planner", preview, undefined, planId);
+              queryClient.invalidateQueries({ queryKey: ["userPlans", token] });
               setShowChatRedirectBanner(true);
               toast.success("Workflow plan generated! Redirect to Agent Chat for further discussion?", {
                 action: {
                   label: "Go to Chat",
-                  onClick: () => router.push("/chat"),
+                  onClick: () => router.push(planId ? `/chat?planId=${planId}` : "/chat"),
                 },
               });
             } else if (data.type === "interrupted") {
@@ -259,6 +363,7 @@ export default function PlannerPage() {
 
   async function submitInterruptAnswer() {
     const cleanAnswer = interruptAnswer.trim();
+    const cleanQuery = query.trim();
     if (!cleanAnswer || !token) return;
 
     setIsStreaming(true);
@@ -321,12 +426,23 @@ export default function PlannerPage() {
                 setStreamedText((prev) => prev + data.content);
               }
             } else if (data.type === "final_report") {
-              setResult(data.data as PlanResponse);
+              const planData = data.data as PlanResponse;
+              setResult(planData);
+              const planId = data.data?.id;
+              if (planId) {
+                setActivePlanId(planId);
+              }
+              const preview =
+                typeof planData?.final_report?.planning?.report === "string"
+                  ? planData.final_report.planning.report.slice(0, 240)
+                  : cleanQuery;
+              addHistory(cleanQuery, "planner", preview, undefined, planId);
+              queryClient.invalidateQueries({ queryKey: ["userPlans", token] });
               setShowChatRedirectBanner(true);
               toast.success("Workflow plan generated! Redirect to Agent Chat for further discussion?", {
                 action: {
                   label: "Go to Chat",
-                  onClick: () => router.push("/chat"),
+                  onClick: () => router.push(planId ? `/chat?planId=${planId}` : "/chat"),
                 },
               });
             } else if (data.type === "interrupted") {
@@ -356,22 +472,7 @@ export default function PlannerPage() {
       {/* ── Sidebar ── */}
           <aside className="space-y-4 lg:sticky lg:top-20 lg:self-start">
             {/* Profile */}
-            <div className="rounded-xl border border-zinc-200 bg-white p-4">
-              <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                <User className="h-3.5 w-3.5" />
-                Your account
-              </div>
-              <div className="space-y-2 text-sm">
-                <div className="flex items-center justify-between rounded-lg bg-zinc-50 px-3 py-2">
-                  <span className="text-zinc-500">Email</span>
-                  <span className="max-w-[160px] truncate font-medium">{user?.email ?? "—"}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-lg bg-zinc-50 px-3 py-2">
-                  <span className="text-zinc-500">Role</span>
-                  <span className="font-medium capitalize">{user?.role ?? "user"}</span>
-                </div>
-              </div>
-            </div>
+            
 
             {/* Query input */}
             <div className="rounded-xl border border-zinc-200 bg-white p-4">
@@ -420,16 +521,18 @@ export default function PlannerPage() {
               </div>
             </div>
 
-            {/* History */}
+            {/* Backend Database Saved Plans */}
             <div className="rounded-xl border border-zinc-200 bg-white p-4">
               <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                  Recent queries
+                <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+                  <Database className="h-3.5 w-3.5 text-blue-600" />
+                  Saved Plans ({backendPlans.length})
                 </div>
-                {history.length > 0 && (
+                {backendPlans.length > 0 && (
                   <button
-                    onClick={clearHistory}
-                    className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-600"
+                    onClick={handleClearAllBackendPlans}
+                    className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-600"
+                    title="Clear all plans from database"
                   >
                     <Trash2 className="h-3 w-3" />
                     Clear
@@ -437,19 +540,64 @@ export default function PlannerPage() {
                 )}
               </div>
 
-              {history.length === 0 ? (
-                <p className="py-2 text-center text-xs text-zinc-400">Plans you generate will appear here</p>
+              {plansQuery.isLoading ? (
+                <div className="flex items-center justify-center gap-2 py-6 text-xs text-zinc-400">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600" />
+                  Fetching plans from database…
+                </div>
+              ) : backendPlans.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-zinc-200 py-6 text-center">
+                  <p className="text-xs text-zinc-400">Plans saved to your database will appear here.</p>
+                </div>
               ) : (
-                <div className="space-y-1.5">
-                  {history.map((item) => (
-                    <button
-                      key={item.id}
-                      onClick={() => setQuery(item.query)}
-                      className="w-full truncate rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2 text-left text-xs text-zinc-600 transition hover:bg-white"
-                    >
-                      {item.query}
-                    </button>
-                  ))}
+                <div className="max-h-[380px] space-y-2 overflow-y-auto pr-0.5">
+                  {backendPlans.map((plan) => {
+                    const isSelected = activePlanId === plan.id;
+                    return (
+                      <div
+                        key={plan.id}
+                        onClick={() => handleSelectBackendPlan(plan)}
+                        role="button"
+                        tabIndex={0}
+                        className={[
+                          "group relative flex flex-col gap-1.5 rounded-lg border p-2.5 text-left transition-all cursor-pointer",
+                          isSelected
+                            ? "border-blue-500 bg-blue-50/50 ring-1 ring-blue-500/20"
+                            : "border-zinc-100 bg-zinc-50/70 hover:border-zinc-200 hover:bg-white hover:shadow-xs",
+                        ].join(" ")}
+                      >
+                        <div className="flex items-center justify-between gap-1 text-[11px]">
+                          <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 font-medium text-emerald-700 border border-emerald-200/60 text-[10px]">
+                            <CheckCircle2 className="h-2.5 w-2.5" /> Saved Plan
+                          </span>
+                          <span className="text-[10px] text-zinc-400">
+                            {formatHistoryTime(plan.created_at)}
+                          </span>
+                        </div>
+
+                        <p className="line-clamp-2 text-xs font-medium text-zinc-700 leading-snug">
+                          {plan.query}
+                        </p>
+
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-[10px] text-blue-600 group-hover:underline">
+                            {isSelected ? "Currently viewing" : "Load plan →"}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteBackendPlan(plan.id);
+                            }}
+                            className="rounded p-1 text-zinc-300 opacity-0 transition group-hover:opacity-100 hover:bg-zinc-200 hover:text-red-500"
+                            title="Delete plan from database"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -475,7 +623,13 @@ export default function PlannerPage() {
                 <div className="flex items-center gap-2">
                   <Bot className="h-4 w-4 text-zinc-400" />
                   <span className="text-sm font-medium text-zinc-700">
-                    {isStreaming ? "Agent working…" : result ? "Plan complete" : "Copilot output"}
+                    {isStreaming
+                      ? "Agent working…"
+                      : result
+                      ? activePlanId
+                        ? "Saved Plan Loaded"
+                        : "Plan complete"
+                      : "Copilot output"}
                   </span>
                   {isStreaming && (
                     <span className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-700">
@@ -483,13 +637,31 @@ export default function PlannerPage() {
                       Live
                     </span>
                   )}
+                  {result && !isStreaming && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 border border-emerald-200/50">
+                      <CheckCircle2 className="h-3 w-3 text-emerald-600" /> Ready
+                    </span>
+                  )}
                 </div>
-                {activeTool && (
-                  <div className="flex items-center gap-1.5 rounded-lg border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
-                    <Wrench className="h-3 w-3 animate-spin" />
-                    {formatToolLabel(activeTool)}
-                  </div>
-                )}
+
+                <div className="flex items-center gap-2">
+                  {result && !isStreaming && (
+                    <button
+                      onClick={handleStartNewPlan}
+                      className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-white px-2.5 py-1 text-xs font-medium text-zinc-700 transition hover:bg-zinc-50 hover:border-zinc-300 shadow-xs"
+                      title="Clear and start a new manufacturing plan"
+                    >
+                      <Plus className="h-3.5 w-3.5 text-zinc-500" />
+                      New Plan
+                    </button>
+                  )}
+                  {activeTool && (
+                    <div className="flex items-center gap-1.5 rounded-lg border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+                      <Wrench className="h-3 w-3 animate-spin" />
+                      {formatToolLabel(activeTool)}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Panel body */}
@@ -540,7 +712,7 @@ export default function PlannerPage() {
                         </div>
                         <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
                           <Button
-                            onClick={() => router.push("/chat")}
+                            onClick={() => router.push(activePlanId ? `/chat?planId=${activePlanId}` : "/chat")}
                             className="flex items-center gap-2 bg-blue-600 font-medium text-white hover:bg-blue-700 shadow-xs"
                             size="sm"
                           >
@@ -716,7 +888,13 @@ function ResultTabs({ result }: { result: PlanResponse }) {
 
       {PIPELINE_STEPS.map((step) => {
         const reportObj = result.final_report?.[step.key as keyof typeof result.final_report];
-        const content = reportObj?.report ?? "No content generated for this section.";
+        const rawReport = reportObj?.report;
+        const content =
+          typeof rawReport === "string"
+            ? rawReport
+            : rawReport
+            ? JSON.stringify(rawReport, null, 2)
+            : "No content generated for this section.";
         return (
           <TabsContent key={step.key} value={step.key} className="m-0">
             <div className="max-h-[520px] overflow-y-auto rounded-lg border border-zinc-100 bg-white p-6">
@@ -774,3 +952,21 @@ function formatToolLabel(toolName: string): string {
   if (name.includes("research")) return "Market analysis";
   return toolName.replace(/_/g, " ");
 }
+
+function formatHistoryTime(isoString?: string): string {
+  if (!isoString) return "";
+  try {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+    if (diffMins < 1) return "Just now";
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  } catch {
+    return "";
+  }
+}
+
