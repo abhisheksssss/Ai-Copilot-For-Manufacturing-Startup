@@ -10,18 +10,9 @@ NEMOTRON_FREE_MODEL = "nvidia/nemotron-3.5-lightning:free"
 
 OPENROUTER_FALLBACK_MODELS = [
     NEMOTRON_FREE_MODEL,
-    "google/gemini-2.0-flash-exp:free",
-    "qwen/qwen-2.5-72b-instruct:free",
-    "deepseek/deepseek-chat:free",
-    "nvidia/llama-3.1-nemotron-70b-instruct:free",
-    "meta-llama/llama-3.1-8b-instruct:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "google/gemma-4-31b-it:free",
 ]
-
-DEPRECATED_OPENROUTER_MODELS = {
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "google/gemini-2.0-flash-lite-preview-02-05:free",
-}
 
 
 class FallbackChatModel(RunnableWithFallbacks):
@@ -54,24 +45,37 @@ class FallbackChatModel(RunnableWithFallbacks):
 
 
 def _get_non_openrouter_fallbacks(temperature: float, max_tokens: int) -> list:
-    """Returns reliable non-OpenRouter LLM instances (Groq, NVIDIA, Gemini) as safety net."""
+    """Returns reliable non-OpenRouter LLM instances (Gemini, Groq, NVIDIA) as safety net."""
     backups = []
+
+    gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+    if gemini_key:
+        try:
+            backups.append(
+                ChatGoogleGenerativeAI(
+                    google_api_key=gemini_key,
+                    model="gemini-2.5-flash",
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                )
+            )
+        except Exception:
+            pass
 
     groq_key = getattr(settings, "GROQ_API_KEY", None)
     if groq_key:
-        for groq_model in ("llama-3.3-70b-versatile", "llama-3.1-8b-instant"):
-            try:
-                backups.append(
-                    ChatGroq(
-                        api_key=groq_key,
-                        model_name=groq_model,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        max_retries=1,
-                    )
+        try:
+            backups.append(
+                ChatGroq(
+                    api_key=groq_key,
+                    model_name="openai/gpt-oss-20b",
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    max_retries=1,
                 )
-            except Exception:
-                pass
+            )
+        except Exception:
+            pass
 
     nvidia_key = (
         getattr(settings, "NVIDIA_API_KEY_2", None)
@@ -82,25 +86,11 @@ def _get_non_openrouter_fallbacks(temperature: float, max_tokens: int) -> list:
         try:
             backups.append(
                 ChatNVIDIA(
-                    model="nvidia/nemotron-3-ultra-550b-a55b",
+                    model="nvidia/llama-3.1-nemotron-70b-instruct",
                     api_key=nvidia_key,
                     temperature=temperature,
                     top_p=0.95,
                     max_tokens=max_tokens,
-                )
-            )
-        except Exception:
-            pass
-
-    gemini_key = getattr(settings, "GEMINI_API_KEY", None)
-    if gemini_key:
-        try:
-            backups.append(
-                ChatGoogleGenerativeAI(
-                    google_api_key=gemini_key,
-                    model="gemini-2.0-flash",
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
                 )
             )
         except Exception:
@@ -281,7 +271,7 @@ def get_mistral_llm(
 
 
 def get_gemini_llm(
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-2.5-flash",
     temperature: float = 0.2,
     max_tokens: int = 1500,
 ):
@@ -293,6 +283,7 @@ def get_gemini_llm(
                 model=model_name,
                 temperature=temperature,
                 max_output_tokens=max_tokens,
+                max_retries=0,
             )
         except Exception:
             pass
@@ -332,7 +323,7 @@ def get_research_llm(temperature: float = 0.2, max_tokens: int = 4000):
 
 
 def get_nvidia_llm(
-    model_name: str = "meta/llama-3.3-70b-instruct",
+    model_name: str = "nvidia/llama-3.1-nemotron-70b-instruct",
     temperature: float = 0.2,
     max_tokens: int = 1500,
 ):
@@ -352,7 +343,7 @@ def get_nvidia_llm(
 
 
 def get_nvidia_llm2(
-    model_name: str = "meta/llama-3.3-70b-instruct",
+    model_name: str = "nvidia/llama-3.1-nemotron-70b-instruct",
     temperature: float = 0.2,
     max_tokens: int = 1500,
 ):
@@ -376,7 +367,7 @@ def get_nvidia_llm2(
 
 
 def get_nvidia_2(
-    model_name: str = "meta/llama-3.3-70b-instruct",
+    model_name: str = "nvidia/llama-3.1-nemotron-70b-instruct",
     temperature: float = 0.2,
     max_tokens: int = 2500,
 ):
@@ -398,10 +389,34 @@ def get_nvidia_2(
 
 
 def get_nvidia_digital_twin_llm(
-    model_name: str = "meta/llama-3.3-70b-instruct",
+    model_name: str = "gemini-2.5-flash",
     temperature: float = 0.2,
     max_tokens: int = 2500,
 ):
+    gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+    if gemini_key:
+        try:
+            return ChatGoogleGenerativeAI(
+                google_api_key=gemini_key,
+                model="gemini-2.5-flash",
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            )
+        except Exception:
+            pass
+
+    groq_key = getattr(settings, "GROQ_API_KEY", None)
+    if groq_key:
+        try:
+            return ChatGroq(
+                api_key=groq_key,
+                model_name="openai/gpt-oss-20b",
+                temperature=temperature,
+                max_tokens=1500,
+            )
+        except Exception:
+            pass
+
     key = (
         getattr(settings, "NVIDIA_API_KEY_3", None)
         or getattr(settings, "NVIDIA_API_KEY_2", None)
@@ -411,49 +426,34 @@ def get_nvidia_digital_twin_llm(
         try:
             return ChatNVIDIA(
                 api_key=key,
-                model=model_name,
+                model="nvidia/llama-3.1-nemotron-70b-instruct",
                 temperature=temperature,
-                timeout=30,
+                timeout=25,
                 max_tokens=max_tokens,
             )
         except Exception:
             pass
-    groq_key = getattr(settings, "GROQ_API_KEY", None)
-    if groq_key:
-        try:
-            return ChatGroq(
-                api_key=groq_key,
-                model_name="llama-3.3-70b-versatile",
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-        except Exception:
-            pass
+
     return get_default_LLM(temperature=temperature, max_tokens=max_tokens)
 
 
 def get_fallback_llm(
-    exclude_provider: str | None = "openrouter",
+    exclude_provider: str | None = None,
     temperature: float = 0.2,
     max_tokens: int = 1500,
 ):
     """
-    Returns a reliable non-OpenRouter LLM by default when primary agents fail.
-    Priority: NVIDIA -> Groq -> Gemini -> OpenRouter (only if not excluded).
+    Returns a reliable non-failing LLM (Gemini -> Groq -> OpenRouter -> NVIDIA).
     """
-    nvidia_key = (
-        getattr(settings, "NVIDIA_API_KEY_2", None)
-        or getattr(settings, "NVIDIA_API_KEY_1", None)
-        or getattr(settings, "NVIDIA_API_KEY", None)
-    )
-    if exclude_provider != "nvidia" and nvidia_key:
+    gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+    if exclude_provider != "gemini" and gemini_key:
         try:
-            return ChatNVIDIA(
-                model="meta/llama-3.3-70b-instruct",
-                api_key=nvidia_key,
+            return ChatGoogleGenerativeAI(
+                google_api_key=gemini_key,
+                model="gemini-2.5-flash",
                 temperature=temperature,
-                top_p=0.95,
-                max_tokens=max_tokens,
+                max_output_tokens=max_tokens,
+                max_retries=0,
             )
         except Exception:
             pass
@@ -463,22 +463,10 @@ def get_fallback_llm(
         try:
             return ChatGroq(
                 api_key=groq_key,
-                model_name="llama-3.3-70b-versatile",
+                model_name="openai/gpt-oss-20b",
                 temperature=temperature,
                 max_tokens=max_tokens,
-                max_retries=2,
-            )
-        except Exception:
-            pass
-
-    gemini_key = getattr(settings, "GEMINI_API_KEY", None)
-    if exclude_provider != "gemini" and gemini_key:
-        try:
-            return ChatGoogleGenerativeAI(
-                google_api_key=gemini_key,
-                model="gemini-2.0-flash",
-                temperature=temperature,
-                max_output_tokens=max_tokens,
+                max_retries=1,
             )
         except Exception:
             pass
@@ -489,27 +477,39 @@ def get_fallback_llm(
         except Exception:
             pass
 
+    nvidia_key = (
+        getattr(settings, "NVIDIA_API_KEY_2", None)
+        or getattr(settings, "NVIDIA_API_KEY_1", None)
+        or getattr(settings, "NVIDIA_API_KEY", None)
+    )
+    if exclude_provider != "nvidia" and nvidia_key:
+        try:
+            return ChatNVIDIA(
+                model="nvidia/llama-3.1-nemotron-70b-instruct",
+                api_key=nvidia_key,
+                temperature=temperature,
+                top_p=0.95,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            pass
+
     return get_default_LLM(temperature=temperature, max_tokens=max_tokens)
 
 
 def get_default_LLM(temperature: float = 0.2, max_tokens: int = 4000):
     """
     Default LLM with fallback chain.
-    Priority: NVIDIA -> Groq -> Gemini -> OpenRouter
+    Priority: Gemini -> Groq -> OpenRouter -> NVIDIA
     """
-    nvidia_key = (
-        getattr(settings, "NVIDIA_API_KEY_2", None)
-        or getattr(settings, "NVIDIA_API_KEY_1", None)
-        or getattr(settings, "NVIDIA_API_KEY", None)
-    )
-    if nvidia_key:
+    gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+    if gemini_key:
         try:
-            return ChatNVIDIA(
-                model="nvidia/nemotron-3-ultra-550b-a55b",
-                api_key=nvidia_key,
+            return ChatGoogleGenerativeAI(
+                google_api_key=gemini_key,
+                model="gemini-2.5-flash",
                 temperature=temperature,
-                top_p=0.95,
-                max_tokens=max_tokens,
+                max_output_tokens=max_tokens,
             )
         except Exception:
             pass
@@ -519,32 +519,40 @@ def get_default_LLM(temperature: float = 0.2, max_tokens: int = 4000):
         try:
             return ChatGroq(
                 api_key=groq_key,
-                model_name="llama-3.3-70b-versatile",
+                model_name="openai/gpt-oss-20b",
                 temperature=temperature,
                 max_tokens=max_tokens,
-                max_retries=2,
-            )
-        except Exception:
-            pass
-
-    gemini_key = getattr(settings, "GEMINI_API_KEY", None)
-    if gemini_key:
-        try:
-            return ChatGoogleGenerativeAI(
-                google_api_key=gemini_key,
-                model="gemini-2.0-flash",
-                temperature=temperature,
-                max_output_tokens=max_tokens,
+                max_retries=1,
             )
         except Exception:
             pass
 
     if getattr(settings, "OPENROUTER_API_KEY", None):
-        return _build_openrouter_with_fallbacks(
-            primary_key_index=1,
-            primary_model=OPENROUTER_FALLBACK_MODELS[0],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        try:
+            return _build_openrouter_with_fallbacks(
+                primary_key_index=1,
+                primary_model=OPENROUTER_FALLBACK_MODELS[0],
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            pass
+
+    nvidia_key = (
+        getattr(settings, "NVIDIA_API_KEY_2", None)
+        or getattr(settings, "NVIDIA_API_KEY_1", None)
+        or getattr(settings, "NVIDIA_API_KEY", None)
+    )
+    if nvidia_key:
+        try:
+            return ChatNVIDIA(
+                model="nvidia/llama-3.1-nemotron-70b-instruct",
+                api_key=nvidia_key,
+                temperature=temperature,
+                top_p=0.95,
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            pass
 
     raise ValueError("No valid LLM API keys found.")

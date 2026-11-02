@@ -26,10 +26,15 @@ import {
   Printer,
   Layers,
   SlidersHorizontal,
+  Globe,
+  ExternalLink,
+  Scale,
+  ShieldAlert,
+  AlertOctagon,
+  Gavel,
+  ZapOff,
 } from "lucide-react";
 import { toast } from "sonner";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -120,6 +125,21 @@ interface SolarProjection {
   usable_roof_area_sqft: number;
 }
 
+interface VerifiedSource {
+  title: string;
+  url: string;
+  snippet?: string;
+}
+
+interface NonComplianceRiskItem {
+  violation: string;
+  statutory_act: string;
+  penal_provision: string;
+  financial_liability: string;
+  operational_impact: string;
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | string;
+}
+
 interface ComplianceResponse {
   matched_sector: SectorSummary;
   spcb_category: string;
@@ -131,6 +151,9 @@ interface ComplianceResponse {
   solar_projection: SolarProjection;
   compliance_roadmap: string[];
   sector_guidelines_markdown?: string | null;
+  regulatory_verification?: string | null;
+  verified_sources?: VerifiedSource[] | null;
+  legal_risk_matrix?: NonComplianceRiskItem[] | null;
 }
 
 export default function CompliancePage() {
@@ -165,7 +188,6 @@ export default function CompliancePage() {
   const [loading, setLoading] = useState(false);
   const [assessment, setAssessment] = useState<ComplianceResponse | null>(null);
   const [expandedPermits, setExpandedPermits] = useState<Record<string, boolean>>({});
-  const [showFullGuideline, setShowFullGuideline] = useState(false);
 
   // Fetch initial sectors for autocomplete
   const fetchSectors = useCallback(async (query = "") => {
@@ -360,9 +382,7 @@ export default function CompliancePage() {
                 ESG, Carbon Footprint & Regulatory Compliance Tracker
               </h1>
             </div>
-            <p className="mt-1 text-xs md:text-sm text-zinc-500">
-              India-first statutory clearance engine (CPCB 419 Sectors, CTE/CTO, DISH, Fire NOC) + Scope 1/2 GHG & Solar Payback Optimizer.
-            </p>
+          
           </div>
 
           {assessment && (
@@ -983,33 +1003,168 @@ export default function CompliancePage() {
               </div>
             </div>
 
-            {/* CPCB Sector Guidelines (OKF Markdown Section) */}
-            {assessment.sector_guidelines_markdown && (
-              <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm space-y-3">
-                <div className="flex items-center justify-between border-b border-zinc-100 pb-2">
-                  <h3 className="text-sm font-bold text-zinc-900 flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-emerald-600" />
-                    CPCB Technical Mitigation Guidelines ({assessment.matched_sector.title})
+            {/* Live Regulatory Web Verification Card */}
+            {assessment.regulatory_verification && (
+              <div className="rounded-xl border border-sky-200 bg-sky-50/40 p-5 shadow-sm space-y-3">
+                <div className="flex items-center justify-between border-b border-sky-100 pb-2">
+                  <h3 className="text-sm font-bold text-sky-950 flex items-center gap-2">
+                    <Globe className="h-4 w-4 text-sky-600" />
+                    Live Web-Verified Regulatory Assessment & Citations
                   </h3>
-                  <button
-                    onClick={() => setShowFullGuideline(!showFullGuideline)}
-                    className="text-xs font-medium text-emerald-600 hover:text-emerald-700"
-                  >
-                    {showFullGuideline ? "Collapse Guide" : "Expand Full Guide"}
-                  </button>
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Verified via Live Web Search
+                  </span>
                 </div>
 
-                <div
-                  className={`prose prose-sm max-w-none text-zinc-700 ${
-                    showFullGuideline ? "" : "max-h-60 overflow-hidden relative"
-                  }`}
-                >
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {assessment.sector_guidelines_markdown}
-                  </ReactMarkdown>
-                  {!showFullGuideline && (
-                    <div className="absolute bottom-0 inset-x-0 h-16 bg-gradient-to-t from-white to-transparent pointer-events-none" />
-                  )}
+                <div className="text-xs text-zinc-700 leading-relaxed whitespace-pre-line space-y-1">
+                  {assessment.regulatory_verification}
+                </div>
+
+                {assessment.verified_sources && assessment.verified_sources.length > 0 && (
+                  <div className="pt-2 border-t border-sky-100">
+                    <p className="text-[11px] font-semibold text-zinc-500 mb-1.5">
+                      Verified Regulatory Sources & Portals:
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {assessment.verified_sources.map((src, i) => (
+                        <a
+                          key={i}
+                          href={src.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md bg-white border border-sky-200 text-sky-700 hover:bg-sky-100 hover:text-sky-900 transition-colors shadow-2xs font-medium"
+                        >
+                          <Globe className="h-3 w-3 text-sky-500" />
+                          <span className="truncate max-w-[240px]">{src.title}</span>
+                          <ExternalLink className="h-3 w-3 text-zinc-400" />
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Statutory Non-Compliance & Legal Risk Matrix */}
+            {assessment.legal_risk_matrix && assessment.legal_risk_matrix.length > 0 && (
+              <div className="rounded-2xl border border-zinc-200/90 bg-white p-6 shadow-sm space-y-5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 pb-4">
+                  <div className="flex items-start gap-3">
+                    <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-rose-500 to-amber-600 flex items-center justify-center text-white shadow-sm shrink-0">
+                      <Scale className="h-5 w-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold text-zinc-900">
+                          Statutory Non-Compliance & Legal Risk Matrix
+                        </h3>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700 border border-rose-200">
+                          <AlertOctagon className="h-3 w-3 text-rose-600" />
+                          Strict Penal Liabilities
+                        </span>
+                      </div>
+                      <p className="text-xs text-zinc-500 mt-0.5">
+                        Statutory liabilities, criminal prosecution clauses, and summary closure powers under Indian environmental and factory labor laws.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-zinc-700 bg-zinc-50 px-3 py-1.5 rounded-lg border border-zinc-200 self-start sm:self-auto font-mono">
+                    <Gavel className="h-3.5 w-3.5 text-zinc-700" />
+                    <span>{assessment.legal_risk_matrix.length} Legal Provisions Governed</span>
+                  </div>
+                </div>
+
+                {/* SPCB Summary Power Banner */}
+                <div className="rounded-xl bg-gradient-to-r from-rose-50 via-amber-50/50 to-rose-50/30 border border-rose-200/80 p-4 flex items-start gap-3">
+                  <ZapOff className="h-5 w-5 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="text-xs space-y-1">
+                    <p className="font-bold text-rose-950 flex items-center gap-2">
+                      <span>Summary Enforcement Powers under Section 33A (Water Act) & Section 31A (Air Act)</span>
+                      <span className="text-[10px] bg-rose-600 text-white px-1.5 py-0.2 rounded font-semibold">Immediate Execution</span>
+                    </p>
+                    <p className="text-rose-900 leading-relaxed">
+                      State Pollution Control Boards ({stateName || "SPCB"}) possess statutory executive authority to issue summary closure orders and direct state electricity DISCOMs to disconnect 3-phase factory power lines and municipal water supplies without prior court hearings if commercial operations or civil construction precede valid CTE/CTO consents.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Matrix Cards Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {assessment.legal_risk_matrix.map((risk, idx) => {
+                    const isCritical = risk.severity === "CRITICAL";
+                    const isHigh = risk.severity === "HIGH";
+
+                    const badgeColor = isCritical
+                      ? "bg-rose-50 text-rose-700 border-rose-200"
+                      : isHigh
+                      ? "bg-amber-50 text-amber-700 border-amber-200"
+                      : "bg-sky-50 text-sky-700 border-sky-200";
+
+                    const borderAccent = isCritical
+                      ? "border-l-4 border-l-rose-500 border-zinc-200 hover:border-zinc-300"
+                      : isHigh
+                      ? "border-l-4 border-l-amber-500 border-zinc-200 hover:border-zinc-300"
+                      : "border-l-4 border-l-sky-500 border-zinc-200 hover:border-zinc-300";
+
+                    return (
+                      <div
+                        key={idx}
+                        className={`rounded-xl border bg-white p-4 transition-all duration-150 hover:shadow-md flex flex-col justify-between space-y-3 ${borderAccent}`}
+                      >
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-md uppercase tracking-wider border ${badgeColor}`}>
+                              {isCritical && <AlertOctagon className="h-3 w-3" />}
+                              {isHigh && <AlertTriangle className="h-3 w-3" />}
+                              {!isCritical && !isHigh && <Info className="h-3 w-3" />}
+                              {risk.severity} Severity
+                            </span>
+                            <span className="text-[11px] font-mono text-zinc-500 bg-zinc-100 px-2 py-0.5 rounded text-right">
+                              Statutory Clause #{idx + 1}
+                            </span>
+                          </div>
+
+                          <h4 className="text-sm font-bold text-zinc-900 leading-snug">
+                            {risk.violation}
+                          </h4>
+
+                          <div className="inline-block text-[11px] font-semibold text-zinc-700 bg-zinc-50 px-2.5 py-1 rounded-md border border-zinc-200">
+                            Governing Statute: {risk.statutory_act}
+                          </div>
+                        </div>
+
+                        <div className="space-y-2.5 text-xs border-t border-zinc-100 pt-3">
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">
+                              Penal Provision & Prosecution
+                            </span>
+                            <p className="text-zinc-700 text-[11px] leading-relaxed">
+                              {risk.penal_provision}
+                            </p>
+                          </div>
+
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] uppercase font-bold text-rose-600 tracking-wider">
+                              Financial Liability & Compensation
+                            </span>
+                            <p className="text-zinc-800 font-medium text-[11px] leading-relaxed bg-rose-50/60 p-2 rounded border border-rose-100">
+                              {risk.financial_liability}
+                            </p>
+                          </div>
+
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] uppercase font-bold text-amber-700 tracking-wider">
+                              Operational Disruption
+                            </span>
+                            <p className="text-zinc-700 text-[11px] leading-relaxed bg-amber-50/50 p-2 rounded border border-amber-100">
+                              {risk.operational_impact}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

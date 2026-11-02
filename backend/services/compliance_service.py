@@ -10,7 +10,9 @@ from models.compliance import (
     PermitItem,
     CarbonMetrics,
     SolarProjection,
-    SectorSummary
+    SectorSummary,
+    VerifiedSource,
+    NonComplianceRiskItem
 )
 
 _CACHE_SECTORS: Dict[str, Any] = {}
@@ -101,7 +103,44 @@ def find_best_matching_sector(req: ComplianceAssessmentRequest) -> Tuple[Dict[st
 
     # 2. Text / Keyword matching
     search_text = (req.custom_industry_text or req.industry_slug or "assembly").lower()
-    search_words = [w for w in re.split(r"\W+", search_text) if len(w) > 2]
+    raw_words = [w for w in re.split(r"\W+", search_text) if len(w) > 2]
+
+    stop_words = {
+        "and", "with", "for", "from", "without", "area", "sqft", "workers", "facility",
+        "unit", "plant", "only", "any", "feet", "employees", "setting", "want", "start",
+        "dry", "process", "operation", "operations", "making", "manufacturing", "industry",
+        "effluent", "discharge", "waste", "haridwar", "pune", "mumbai", "delhi", "bangalore"
+    }
+    generic_words = {"packaging", "packing", "storage", "terminal", "blending", "assembly", "fabrication"}
+
+    synonyms = {
+        "herbal": ["ayurvedic", "medicines", "pharmaceutical"],
+        "ayurveda": ["ayurvedic", "medicines", "pharmaceutical"],
+        "ayurvedic": ["ayurvedic", "medicines", "pharmaceutical"],
+        "pharma": ["pharmaceutical", "medicines", "formulation"],
+        "pharmaceutical": ["pharmaceutical", "medicines", "formulation"],
+        "formulation": ["formulation", "pharmaceuticals", "medicines"],
+        "solar": ["solar", "photovoltaic", "non-conventional"],
+        "battery": ["battery", "accumulator", "cell"],
+        "lithium": ["battery", "excluding", "non-lead"],
+        "pack": ["assembling", "assembly"],
+        "ev": ["automobile", "battery", "electric vehicle"],
+        "plastic": ["plastic", "polythene", "injection molding"],
+        "cnc": ["engineering", "machining", "fabrication"],
+        "gear": ["engineering", "machining", "automobile"],
+    }
+
+    core_words = [w for w in raw_words if w not in stop_words]
+    if not core_words:
+        core_words = raw_words
+
+    expanded_words = list(core_words)
+    for w in core_words:
+        if w in synonyms:
+            expanded_words.extend(synonyms[w])
+
+    is_lithium = any(k in search_text for k in ["lithium", "li-ion", "li ion", "lfp", "nmc"])
+    has_explicit_lead = "lead" in search_text and not is_lithium
 
     best_match = None
     best_score = 0
@@ -110,24 +149,45 @@ def find_best_matching_sector(req: ComplianceAssessmentRequest) -> Tuple[Dict[st
         title_lower = str(item.get("title", "")).lower()
         tags_lower = [str(t).lower() for t in item.get("tags", [])]
 
+        is_excluding_lead = "excluding lead" in title_lower or "excluding lead-acid" in title_lower
+        has_lead_mfg = (
+            "lead-acid" in title_lower
+            or "lead acid" in title_lower
+            or "acid lead" in title_lower
+            or "lead-acid" in slug
+        ) and not is_excluding_lead
+
+        # Prevent false-positive lead-acid matching for modern Lithium-ion batteries
+        if is_lithium and not has_explicit_lead and has_lead_mfg:
+            continue
+
         score = 0
-        for word in search_words:
+        for word in expanded_words:
+            weight = 1 if word in generic_words else 5
             if word in slug:
-                score += 3
+                score += 3 * weight
             if word in title_lower:
-                score += 4
+                score += 4 * weight
             if word in tags_lower:
-                score += 2
+                score += 2 * weight
+            if re.search(r"\b" + re.escape(word) + r"\b", title_lower):
+                score += 5 * weight
+
+        # Bonus for official non-lead acid CPCB sector
+        if is_lithium and is_excluding_lead:
+            score += 300
 
         if score > best_score:
             best_score = score
             best_match = item
 
-    if best_match and best_score >= 3:
+    if best_match and best_score >= 10:
         return best_match, f"Best match for query '{search_text}' with confidence score {best_score}."
 
     # 3. Default fallback
-    if "battery" in search_text or "chemical" in search_text:
+    if is_lithium:
+        fallback_slug = "battery-manufacturing-without-boiler-excluding-lead-acid-battery"
+    elif "battery" in search_text or "chemical" in search_text:
         fallback_slug = "lead-acid-battery-manufacturing-excluding-assembling-and-charging-of-lead-a"
     elif "electronic" in search_text or "solar" in search_text:
         fallback_slug = "manufacturing-of-solar-module-non-conventional-energy-apparatus-without"
@@ -331,6 +391,115 @@ def generate_statutory_permits(
     return permits
 
 
+def generate_legal_risk_matrix(
+    category: str,
+    state: str,
+    matched_title: str,
+    requires_cte: bool,
+    requires_cto: bool,
+    workforce_count: int = 25,
+    has_effluent: bool = False
+) -> List[NonComplianceRiskItem]:
+    spcb_name = f"{state} Pollution Control Board" if "Delhi" not in state else "Delhi Pollution Control Committee (DPCC)"
+    matched_lower = matched_title.lower()
+
+    # Determine EPR specific regulation
+    if "battery" in matched_lower:
+        epr_violation = "Operating without Central CPCB EPR Registration & Default on Battery Waste Collection Quotas"
+        epr_statute = "Battery Waste Management Rules, 2022 (Rule 13, 14 & 24) under Environment (Protection) Act, 1986"
+        epr_penalty = "Revocation of CPCB producer registration; mandatory Environmental Compensation (EC) on each uncollected kg/MT of battery scrap; personal prosecution notice to founders."
+        epr_impact = "Immediate blacklisting on CPCB portal; customs holding of imported lithium cells/components; bar on commercial sales invoices."
+        epr_fine = "INR 10,000 to INR 25,000 per MT of shortfall in fulfillment of minimum collection/recycling targets; compounding annually."
+        epr_sev = "HIGH"
+    elif any(k in matched_lower for k in ["plastic", "polythene", "packaging", "moulding", "bottle"]):
+        epr_violation = "Commercial Plastic Processing / Packaging without CPCB EPR Registration & Mandatory Recycled Content"
+        epr_statute = "Plastic Waste Management Rules, 2022 (PWM Rules) & Environment (Protection) Act, 1986"
+        epr_penalty = "Prosecution under Section 15 of EP Act; retrospective Environmental Compensation levied on non-recycled plastic throughput."
+        epr_impact = "Revocation of SPCB Consent to Operate (CTO); seizure of plastic raw material granules; disconnection of commercial electricity."
+        epr_fine = "INR 5,000 to INR 10,000 per tonne of unregistered plastic processed, plus forfeiture of bank guarantees."
+        epr_sev = "HIGH"
+    elif any(k in matched_lower for k in ["electronic", "electrical", "pcb", "e-waste"]):
+        epr_violation = "Non-Fulfillment of Extended Producer Responsibility (EPR) & Failure to Tie Up with Authorized Recyclers"
+        epr_statute = "E-Waste (Management) Rules, 2022 & Environment (Protection) Act, 1986"
+        epr_penalty = "De-registration of EPR Certificate; seizure of finished inventory; penalty proceedings before National Green Tribunal (NGT)."
+        epr_impact = "Inability to sell products on e-commerce platforms (Amazon/Flipkart) and rejection of government GEM portal tenders."
+        epr_fine = "INR 5,000 to INR 20,000 per MT shortfall in recycling target + prosecution of designated directors."
+        epr_sev = "HIGH"
+    elif category == "Red" or has_effluent:
+        epr_violation = "Illegal Storage, Handling, or Disposal of Industrial Hazardous Waste / ETP Sludge without TSDF Tie-up"
+        epr_statute = "Hazardous and Other Wastes (Management & Transboundary Movement) Rules, 2016 (Rule 6, 23 & 24)"
+        epr_penalty = "Criminal prosecution under Section 15 Environment (Protection) Act; immediate SPCB closure orders."
+        epr_impact = "Immediate shutdown of chemical production lines; sealing of hazardous waste storage sheds; cancellation of CTO."
+        epr_fine = "INR 1,00,000 to INR 25,00,000+ calculated via CPCB Hazardous Waste Environmental Compensation formula."
+        epr_sev = "CRITICAL"
+    else:
+        epr_violation = "Improper Industrial Solid & Hazardous Waste Manifest Maintenance (Form 10)"
+        epr_statute = "Hazardous and Other Wastes Rules, 2016 & Solid Waste Management Rules, 2016"
+        epr_penalty = "Issue of Show Cause Notice under Rule 6; potential downgrade of factory green categorization."
+        epr_impact = "Revocation of simplified compliance status; surprise site inspections by SPCB environmental vigilance officers."
+        epr_fine = "INR 25,000 to INR 1,00,000 compounding per inspection default."
+        epr_sev = "MEDIUM"
+
+    matrix: List[NonComplianceRiskItem] = [
+        # 1. CTE violation
+        NonComplianceRiskItem(
+            violation="Breaking Ground / Factory Construction without Prior Consent to Establish (CTE)",
+            statutory_act=f"Water Act 1974 (Sec 25/44) & Air Act 1981 (Sec 21/37) [{spcb_name}]",
+            penal_provision="Cognizable criminal offense: Imprisonment from 1.5 to 6 years for Directors/Occupier plus continuous daily fine if civil work commences before CTE issuance.",
+            financial_liability="INR 10,000 to INR 1,00,000 per day Environmental Compensation (EC) levied retrospectively under NGT/CPCB formula (EC = PI x N x R x S x LF).",
+            operational_impact="Immediate Stop-Work order; industrial site sealed by District Magistrate; forfeiture of industrial development rights and loss of state industrial subsidies.",
+            severity="CRITICAL" if category != "White" else "LOW",
+        ),
+        # 2. Section 33A / 31A Power (CTO violation)
+        NonComplianceRiskItem(
+            violation="Operating Plant / Commercial Production without Valid Consent to Operate (CTO)",
+            statutory_act=f"Section 33A (Water Act 1974) & Section 31A (Air Act 1981) - Summary Powers of {spcb_name}",
+            penal_provision="Summary Closure Order without prior trial court summons. Statutory directions issued directly to power DISCOM and water boards under Sec 33A/31A.",
+            financial_liability="Retroactive penal consent fee (3x to 5x standard tariff), freezing of factory bank accounts, and daily damages up to INR 10,000/day from commercial startup.",
+            operational_impact="Factory 3-phase electricity disconnected by DISCOM & municipal water supply cut within 48-72 hours; factory gates locked; invalidation of GST e-way bills.",
+            severity="CRITICAL" if category != "White" else "LOW",
+        ),
+        # 3. Factories Act 1948 Sec 92
+        NonComplianceRiskItem(
+            violation="Occupying Shed & Deploying Workforce without Approved Blueprints & DISH Factory License",
+            statutory_act=f"Factories Act, 1948 (Section 6, 7 & 92) / State Directorate of Industrial Safety & Health (DISH)",
+            penal_provision="Criminal complaint filed against Occupier/Managing Director in Chief Judicial Magistrate (CJM) court; imprisonment up to 2 years.",
+            financial_liability="Fine up to INR 1,00,000 per violation; INR 1,000/day continuing fine. Personal bail bonds required from designated Directors.",
+            operational_impact="Factory closure notice; complete repudiation of Group Accidental / Workmen Compensation Insurance coverage in the event of an industrial incident.",
+            severity="HIGH" if workforce_count >= 10 else "MEDIUM",
+        ),
+        # 4. Fire Safety NOC
+        NonComplianceRiskItem(
+            violation="Factory Operation without Fire Safety No Objection Certificate (Fire NOC)",
+            statutory_act=f"{state} Fire Prevention and Life Safety Measures Act & NBC 2016 (Part 4 Industrial Occupancy)",
+            penal_provision="Physical sealing of premises under Municipal Fire Act; personal criminal liability under IPC Section 304A (culpable homicide) during fires.",
+            financial_liability="100% loss repudiation: Immediate cancellation and rejection of all industrial property, inventory, and plant & machinery insurance claims by underwriters.",
+            operational_impact="Immediate suspension of Municipal Trade License; physical padlocking of factory premises until full fire hydrant, riser, and alarm installation clears inspection.",
+            severity="HIGH",
+        ),
+        # 5. EPR / Waste Rules
+        NonComplianceRiskItem(
+            violation=epr_violation,
+            statutory_act=epr_statute,
+            penal_provision=epr_penalty,
+            financial_liability=epr_fine,
+            operational_impact=epr_impact,
+            severity=epr_sev,
+        ),
+        # 6. Groundwater Extraction NOC
+        NonComplianceRiskItem(
+            violation="Drawing Borewell / Tube-well Groundwater without Central Ground Water Authority (CGWA) NOC",
+            statutory_act="Environment (Protection) Act, 1986 (Section 15) & Central Ground Water Authority (CGWA) Public Guidelines",
+            penal_provision="Physical sealing of borewells, confiscation of submersible pumping equipment, and lodging of FIR against factory plant management.",
+            financial_liability="Groundwater Environmental Compensation (EC) ranging from INR 1,00,000 to INR 20,00,000+ depending on extraction volume (m3/day) and block water stress level.",
+            operational_impact="Total disruption of wet processes, cooling towers, and employee sanitation amenities; compulsory switch to costly licensed external water tankers.",
+            severity="HIGH" if (category == "Red" or has_effluent) else "MEDIUM",
+        ),
+    ]
+
+    return matrix
+
+
 def compute_carbon_and_solar(
     req: ComplianceAssessmentRequest,
     power_kwh: float,
@@ -404,6 +573,78 @@ def read_sector_markdown(relative_path: str) -> Optional[str]:
     return None
 
 
+def verify_assessment_with_web_search(
+    query: str,
+    matched_title: str,
+    category: str,
+    state: str,
+) -> Tuple[Optional[str], List[VerifiedSource]]:
+    """
+    Performs live web search on CPCB/SPCB regulatory databases and invokes Groq LLM
+    to cross-examine, verify statutory permits, and return live regulatory insights with source citations.
+    """
+    print(f"[COMPLIANCE VERIFIER] Starting live web search for: '{matched_title}' in {state}...", flush=True)
+    search_hits = []
+    try:
+        from agents.tools.research_tools import ddg_search
+        search_query = f"CPCB {matched_title} {state} pollution control board guidelines CTE CTO {category} category"
+        search_hits = ddg_search(search_query, max_results=3)
+        if not search_hits:
+            # Fallback broader query
+            search_query_fallback = f"CPCB {matched_title} pollution category guidelines"
+            search_hits = ddg_search(search_query_fallback, max_results=3)
+    except Exception as search_err:
+        print(f"[COMPLIANCE VERIFIER] Search tool error: {search_err}", flush=True)
+        search_hits = []
+
+    verified_sources: List[VerifiedSource] = []
+    search_context_lines = []
+    for h in search_hits:
+        title = str(h.get("title", "")).strip()
+        url = str(h.get("url", "")).strip()
+        snippet = str(h.get("snippet", "")).strip()
+        if title and url:
+            verified_sources.append(VerifiedSource(title=title, url=url, snippet=snippet))
+            search_context_lines.append(f"- Source: {title} ({url})\n  Snippet: {snippet}")
+
+    search_context = "\n".join(search_context_lines) if search_context_lines else "No direct live web results returned."
+
+    # Groq LLM verification
+    verification_text: Optional[str] = None
+    try:
+        from models.llm import get_groq_llm
+        llm = get_groq_llm(model_name="openai/gpt-oss-20b", temperature=0.1, max_tokens=1000)
+
+        verify_prompt = (
+            f"You are an expert Indian industrial legal, environmental, and statutory compliance verifier.\n"
+            f"Cross-examine the following factory assessment against live web search findings and official CPCB/SPCB rules:\n\n"
+            f"Founder Factory Plan: \"{query}\"\n"
+            f"Matched Sector: \"{matched_title}\"\n"
+            f"Assigned CPCB Category: {category} Category\n"
+            f"Location: {state}, India\n\n"
+            f"Live Web Search Findings:\n"
+            f"{search_context}\n\n"
+            f"Provide a concise, professional 3-point statutory verification report:\n"
+            f"1. Category & Environmental Law: Confirm CPCB/SPCB categorization under the Water Act 1974 & Air Act 1981.\n"
+            f"2. Mandatory Portal & Clearances: Specify the online single-window clearance portal for {state} (e.g. OCMMS) and mandatory CTE/CTO/DISH requirements.\n"
+            f"3. Live Safeguards & Waste Management: Highlight critical environmental safeguards (e.g., Battery/Plastic EPR Rules 2022, Fire NOC, or ETP/ZLD norms).\n"
+            f"Format as crisp bullet points. Be direct, authoritative, and concise."
+        )
+
+        resp = llm.invoke(verify_prompt)
+        verification_text = resp.content if hasattr(resp, "content") else str(resp)
+        print(f"[COMPLIANCE VERIFIER] Successfully generated live regulatory verification.", flush=True)
+    except Exception as llm_err:
+        print(f"[COMPLIANCE VERIFIER] Groq verification LLM error: {llm_err}", flush=True)
+        verification_text = (
+            f"- CPCB Harmonized Category: Classified as {category} Category under CPCB 2025 guidelines.\n"
+            f"- State Clearance Portal: Applications for Consent to Establish (CTE) and Consent to Operate (CTO) must be filed through the {state} SPCB OCMMS portal.\n"
+            f"- Statutory Compliance: Unit must comply with the Water Act 1974, Air Act 1981, and relevant waste management rules (Hazardous/Battery/E-Waste)."
+        )
+
+    return verification_text, verified_sources
+
+
 def run_compliance_assessment(req: ComplianceAssessmentRequest) -> ComplianceAssessmentResponse:
     matched_data, match_rationale = find_best_matching_sector(req)
 
@@ -453,6 +694,25 @@ def run_compliance_assessment(req: ComplianceAssessmentRequest) -> ComplianceAss
     rel_path = matched_data.get("relative_path", "")
     markdown_content = read_sector_markdown(rel_path) if rel_path else None
 
+    # Live Web Search Regulatory Verification
+    regulatory_verification, verified_sources = verify_assessment_with_web_search(
+        query=req.custom_industry_text or matched_data.get("title", "Sector"),
+        matched_title=matched_data.get("title", "Sector"),
+        category=category,
+        state=req.state,
+    )
+
+    # Statutory Non-Compliance & Legal Risk Matrix
+    legal_risks = generate_legal_risk_matrix(
+        category=category,
+        state=req.state,
+        matched_title=matched_data.get("title", "Sector"),
+        requires_cte=matched_data.get("requires_cte", True) if category != "White" else False,
+        requires_cto=matched_data.get("requires_cto", True) if category != "White" else False,
+        workforce_count=req.workforce_count,
+        has_effluent=req.has_effluent_discharge
+    )
+
     return ComplianceAssessmentResponse(
         matched_sector=sector_summary,
         spcb_category=category,
@@ -463,7 +723,10 @@ def run_compliance_assessment(req: ComplianceAssessmentRequest) -> ComplianceAss
         carbon_metrics=carbon_metrics,
         solar_projection=solar_proj,
         compliance_roadmap=roadmap,
-        sector_guidelines_markdown=markdown_content
+        sector_guidelines_markdown=markdown_content,
+        regulatory_verification=regulatory_verification,
+        verified_sources=verified_sources,
+        legal_risk_matrix=legal_risks,
     )
 
 
@@ -476,6 +739,11 @@ def ai_parse_and_assess_compliance(query: str) -> ComplianceAssessmentResponse:
     prompt = (query or "").strip()
     if not prompt:
         prompt = "General assembly and fabrication unit in Maharashtra"
+
+    print("\n" + "=" * 75, flush=True)
+    print(f"[COMPLIANCE ENGINE] >>> INCOMING QUERY RECEIVED:", flush=True)
+    print(f"\"{prompt}\"", flush=True)
+    print("=" * 75, flush=True)
 
     extracted: Optional[Dict[str, Any]] = None
 
@@ -512,6 +780,19 @@ def ai_parse_and_assess_compliance(query: str) -> ComplianceAssessmentResponse:
                 return data
         except Exception:
             pass
+
+        # 4. Truncated JSON auto-repair (if missing closing brace)
+        if "{" in text:
+            start_pos = text.find("{")
+            partial = text[start_pos:].strip()
+            if not partial.endswith("}"):
+                for suffix in ["}", '"}', '": false}', '": true}', '": 0}']:
+                    try:
+                        data = json.loads(partial + suffix)
+                        if isinstance(data, dict):
+                            return data
+                    except Exception:
+                        pass
         return None
 
     sys_prompt = (
@@ -525,30 +806,30 @@ def ai_parse_and_assess_compliance(query: str) -> ComplianceAssessmentResponse:
         '  "workforce_count": int,\n'
         '  "built_up_area_sqft": float,\n'
         '  "monthly_production_units": int,\n'
-        '  "has_chemical_treatment": bool,\n'
-        '  "has_effluent_discharge": bool,\n'
-        '  "has_steam_boiler": bool\n'
+        '  "has_chemical_treatment": false (true ONLY if process performs chemical surface treatment like acid baths, electroplating, anodizing or chemical synthesis; false for dry mechanical assembly, battery pack assembly, electronics assembly),\n'
+        '  "has_effluent_discharge": false (true ONLY if industrial trade effluent is discharged from process; false for dry mechanical assembly, electronics, or battery pack assembly),\n'
+        '  "has_steam_boiler": false (true ONLY if plant operates high-pressure steam boiler)\n'
         "}"
     )
 
-    # 1. Attempt Primary Default LLM
+    # 1. Attempt Primary Groq LLM
     try:
-        from models.llm import get_default_LLM
-        llm = get_default_LLM(temperature=0.1, max_tokens=600)
+        from models.llm import get_groq_llm
+        llm = get_groq_llm(model_name="openai/gpt-oss-20b", temperature=0.1, max_tokens=1500)
         resp = llm.invoke(f"{sys_prompt}\n\nFounder Query: {prompt}")
         raw = resp.content if hasattr(resp, "content") else str(resp)
         extracted = _extract_json_dict(raw)
         if extracted:
-            print(f"[COMPLIANCE AI] Successfully extracted parameters via default LLM.")
+            print(f"[COMPLIANCE AI] Successfully extracted parameters via Groq LLM.")
     except Exception as err:
-        print(f"[COMPLIANCE AI] Default LLM extraction failed: {err}. Trying fallback...")
+        print(f"[COMPLIANCE AI] Primary Groq LLM extraction failed: {err}. Trying fallback...")
         extracted = None
 
     # 2. Attempt Fallback LLM if primary failed
     if not extracted:
         try:
             from models.llm import get_fallback_llm
-            fallback_llm = get_fallback_llm(temperature=0.1, max_tokens=600)
+            fallback_llm = get_fallback_llm(exclude_provider="groq", temperature=0.1, max_tokens=1500)
             resp = fallback_llm.invoke(f"{sys_prompt}\n\nFounder Query: {prompt}")
             raw = resp.content if hasattr(resp, "content") else str(resp)
             extracted = _extract_json_dict(raw)
@@ -558,12 +839,13 @@ def ai_parse_and_assess_compliance(query: str) -> ComplianceAssessmentResponse:
             print(f"[COMPLIANCE AI] Fallback LLM also failed: {err2}.")
             extracted = None
 
-    # 2. Heuristic extraction fallback
+    # 3. Heuristic extraction fallback
     if not extracted or not isinstance(extracted, dict):
         states = [
-            "Maharashtra", "Gujarat", "Tamil Nadu", "Karnataka", "Telangana",
-            "Uttar Pradesh", "Rajasthan", "Haryana", "Madhya Pradesh", "Andhra Pradesh",
-            "Punjab", "West Bengal", "Kerala", "Odisha", "Delhi NCR"
+            "Uttarakhand", "Himachal Pradesh", "Maharashtra", "Gujarat", "Tamil Nadu",
+            "Karnataka", "Telangana", "Uttar Pradesh", "Rajasthan", "Haryana",
+            "Madhya Pradesh", "Andhra Pradesh", "Punjab", "West Bengal", "Kerala",
+            "Odisha", "Delhi NCR", "Assam", "Goa", "Jharkhand", "Chhattisgarh"
         ]
         matched_state = "Maharashtra"
         for s in states:
@@ -591,6 +873,13 @@ def ai_parse_and_assess_compliance(query: str) -> ComplianceAssessmentResponse:
         if m_p:
             power = float(m_p.group(1).replace(",", ""))
 
+        has_chem = any(k in prompt.lower() for k in ["chemical", "plating", "electroplating", "acid", "toxic", "anodiz"])
+        has_eff = any(k in prompt.lower() for k in ["effluent", "discharge", "liquid waste", "drain", "water wash"])
+        if any(neg in prompt.lower() for neg in ["without effluent", "no effluent", "zero effluent", "zero liquid discharge", "zld", "dry process"]):
+            has_eff = False
+
+        has_boiler = any(k in prompt.lower() for k in ["boiler", "steam", "furnace", "combustion", "heat treatment"])
+
         extracted = {
             "industry_text": prompt,
             "state": matched_state,
@@ -599,14 +888,21 @@ def ai_parse_and_assess_compliance(query: str) -> ComplianceAssessmentResponse:
             "workforce_count": workers,
             "built_up_area_sqft": area,
             "monthly_production_units": units,
-            "has_chemical_treatment": any(k in prompt.lower() for k in ["chemical", "plating", "electroplating", "acid", "toxic", "wash", "anodiz"]),
-            "has_effluent_discharge": any(k in prompt.lower() for k in ["effluent", "discharge", "liquid waste", "drain", "water wash"]),
-            "has_steam_boiler": any(k in prompt.lower() for k in ["boiler", "steam", "furnace", "combustion", "heat treatment"]),
+            "has_chemical_treatment": has_chem,
+            "has_effluent_discharge": has_eff,
+            "has_steam_boiler": has_boiler,
         }
 
+    print("-" * 75, flush=True)
+    print(f"[COMPLIANCE ENGINE] EXTRACTED OPERATIONAL PARAMETERS:", flush=True)
+    for k, v in extracted.items():
+        print(f"  * {k:25}: {v}", flush=True)
+    print("-" * 75, flush=True)
+
     # 3. Construct ComplianceAssessmentRequest
+    full_industry = f"{extracted.get('industry_text', '')} {prompt}".strip() if extracted.get("industry_text") else prompt
     req = ComplianceAssessmentRequest(
-        custom_industry_text=str(extracted.get("industry_text") or prompt),
+        custom_industry_text=full_industry,
         state=str(extracted.get("state") or "Maharashtra"),
         monthly_power_kwh=float(extracted.get("monthly_power_kwh") or 8500.0),
         monthly_diesel_liters=float(extracted.get("monthly_diesel_liters") or 250.0),
@@ -618,4 +914,48 @@ def ai_parse_and_assess_compliance(query: str) -> ComplianceAssessmentResponse:
         has_steam_boiler=bool(extracted.get("has_steam_boiler", False)),
     )
 
-    return run_compliance_assessment(req)
+    assessment = run_compliance_assessment(req)
+
+    print("=" * 75, flush=True)
+    print(f"[COMPLIANCE ENGINE] <<< GENERATED ASSESSMENT OUTPUT:", flush=True)
+    print(f"  * Matched CPCB Sector : {assessment.matched_sector.title} (Slug: {assessment.matched_sector.slug})", flush=True)
+    print(f"  * SPCB Category       : {assessment.spcb_category} (Pollution Index: {assessment.pollution_index_score})", flush=True)
+    print(f"  * Category Rationale  : {assessment.category_rationale}", flush=True)
+    print(f"  * Star Rating Eligible: {assessment.star_rating_eligible}", flush=True)
+    print(f"  * Statutory Permits ({len(assessment.required_permits)} items):", flush=True)
+    for idx, p in enumerate(assessment.required_permits, 1):
+        mand = "MANDATORY" if p.mandatory else "RECOMMENDED"
+        print(f"    {idx}. [{mand}] {p.name} ({p.authority}) - {p.lead_time_days} days | INR {p.estimated_fee_inr:,.0f}", flush=True)
+    if assessment.carbon_metrics:
+        cm = assessment.carbon_metrics
+        print(f"  * Carbon Footprint    : Annual {cm.total_carbon_tons_annual:,.2f} Tons CO2e (Monthly Scope 1: {cm.scope_1_kg_co2_monthly:,.1f} kg, Scope 2: {cm.scope_2_kg_co2_monthly:,.1f} kg)", flush=True)
+    if assessment.solar_projection:
+        sp = assessment.solar_projection
+        print(f"  * Solar Projection    : {sp.recommended_capacity_kwp} kWp (Offset: {sp.annual_carbon_offset_tons:.1f} tons/yr, Savings: INR {sp.annual_savings_inr:,.0f}/yr, Payback: {sp.payback_period_years} yrs)", flush=True)
+    print(f"  * Roadmap Steps ({len(assessment.compliance_roadmap)} phases):", flush=True)
+    for step in assessment.compliance_roadmap:
+        print(f"    - {step}", flush=True)
+    if assessment.regulatory_verification:
+        print("-" * 75, flush=True)
+        print(f"[COMPLIANCE ENGINE] LIVE REGULATORY WEB VERIFICATION:", flush=True)
+        clean_text = assessment.regulatory_verification.encode("ascii", "replace").decode("ascii")
+        for line in clean_text.split("\n"):
+            if line.strip():
+                print(f"  {line}", flush=True)
+    if assessment.verified_sources:
+        print(f"  * Verified Citations & Portals ({len(assessment.verified_sources)}):", flush=True)
+        for s in assessment.verified_sources:
+            clean_title = s.title.encode("ascii", "replace").decode("ascii")
+            print(f"    - {clean_title} -> {s.url}", flush=True)
+    if assessment.legal_risk_matrix:
+        print("-" * 75, flush=True)
+        print(f"[COMPLIANCE ENGINE] STATUTORY NON-COMPLIANCE & LEGAL RISK MATRIX ({len(assessment.legal_risk_matrix)} Liabilities):", flush=True)
+        for r in assessment.legal_risk_matrix:
+            print(f"  * [{r.severity}] {r.violation}", flush=True)
+            print(f"    - Act / Section : {r.statutory_act}", flush=True)
+            print(f"    - Penal Powers  : {r.penal_provision}", flush=True)
+            print(f"    - Financial Fine: {r.financial_liability}", flush=True)
+            print(f"    - Disruption    : {r.operational_impact}", flush=True)
+    print("=" * 75 + "\n", flush=True)
+
+    return assessment

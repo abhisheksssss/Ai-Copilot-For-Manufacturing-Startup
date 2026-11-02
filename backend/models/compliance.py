@@ -75,6 +75,21 @@ class SectorSummary(BaseModel):
     tags: List[str]
 
 
+class VerifiedSource(BaseModel):
+    title: str
+    url: str
+    snippet: Optional[str] = None
+
+
+class NonComplianceRiskItem(BaseModel):
+    violation: str
+    statutory_act: str
+    penal_provision: str
+    financial_liability: str
+    operational_impact: str
+    severity: str  # "CRITICAL" | "HIGH" | "MEDIUM"
+
+
 class ComplianceAssessmentResponse(BaseModel):
     matched_sector: SectorSummary
     spcb_category: str  # "Red" | "Orange" | "Green" | "White" | "Blue"
@@ -86,3 +101,6 @@ class ComplianceAssessmentResponse(BaseModel):
     solar_projection: SolarProjection
     compliance_roadmap: List[str]
     sector_guidelines_markdown: Optional[str] = None
+    regulatory_verification: Optional[str] = None
+    verified_sources: Optional[List[VerifiedSource]] = None
+    legal_risk_matrix: Optional[List[NonComplianceRiskItem]] = None

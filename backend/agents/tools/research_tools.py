@@ -47,7 +47,7 @@ def ddg_search(query: str, max_results: int = 6) -> list[dict]:
     try:
         raw = ddg.invoke(query)
         entries = re.findall(
-            r'snippet:\s*(.*?),\s*title:\s*(.*?),\s*link:\s*(https?://[^\]]+)',
+            r'snippet:\s*(.*?),\s*title:\s*(.*?),\s*link:\s*(https?://[^\s,\]]+)',
             raw
         )
         results = []
