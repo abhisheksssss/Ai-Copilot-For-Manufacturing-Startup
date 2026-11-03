@@ -170,24 +170,81 @@ export type IndustryLocation = {
   summary: string;
 };
 
+export type LocationAdvantagePillars = {
+  supply_chain_ecosystem: string;
+  state_subsidies_policy: string;
+  logistics_connectivity: string;
+  spcb_clearance_siting: string;
+  skilled_workforce: string;
+};
+
+export type LocationRecommendation = {
+  sector: string;
+  recommended_state: string;
+  recommended_district: string;
+  recommended_cluster: string;
+  suitability_score: number;
+  why_recommended_summary: string;
+  key_advantages: LocationAdvantagePillars;
+};
+
 export type LocationSearchResponse = {
   query: string;
+  mode?: "auto" | "specific" | "recommendation";
+  user_specified_location?: string | null;
+  recommendation?: LocationRecommendation | null;
   total_catalogue_locations: number;
   google_places_enrichment: "enabled" | "not_configured";
   results: IndustryLocation[];
   disclaimer: string;
 };
 
+export async function fetchLocationStates(token: string) {
+  return request<string[]>("/api/locations/states", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 export async function searchIndustryLocations(
   query: string,
   token: string,
-  options: { limit?: number; enrich?: boolean } = {},
+  options: {
+    limit?: number;
+    enrich?: boolean;
+    state_filter?: string | null;
+    mode?: "auto" | "specific" | "recommendation";
+  } = {},
 ) {
   return request<LocationSearchResponse>("/api/locations/search", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ query, limit: options.limit ?? 5, enrich: options.enrich ?? true }),
+    body: JSON.stringify({
+      query,
+      limit: options.limit ?? 5,
+      enrich: options.enrich ?? true,
+      state_filter: options.state_filter ?? null,
+      mode: options.mode ?? "auto",
+    }),
   });
 }
 
-
+export async function recommendOptimalLocation(
+  industry_description: string,
+  token: string,
+  options: {
+    state_preference?: string | null;
+    limit?: number;
+    enrich?: boolean;
+  } = {},
+) {
+  return request<LocationSearchResponse>("/api/locations/recommend", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      industry_description,
+      state_preference: options.state_preference ?? null,
+      limit: options.limit ?? 5,
+      enrich: options.enrich ?? true,
+    }),
+  });
+}
