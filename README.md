@@ -3,16 +3,6 @@
 
 ---
 
-## 📌 Executive & Submission Overview
-
-### ⚠️ Important Submission Requirements Compliance
-- **Files / Docs Only**: This document serves as the unified, single-source master documentation for the HackMatrix project evaluation. It contains all four required deliverables:
-  1. **Project Report** (SRS, Design, Implementation Details, and Testing)
-  2. **User Manual** (End-to-end operational guide and UI walkthroughs)
-  3. **Deployment Setup** (Local dev setup and cloud deployment on Render/Vercel/Neon)
-  4. **Final Presentation & Demo Script** (10-slide deck content and 7-minute live demo script)
-- **Direct Google Drive / Docs Submission**: A matching pre-formatted Microsoft Word (`.docx`) version of this entire document is located at [`docs/Final_Complete_Project_Documentation.docx`](docs/Final_Complete_Project_Documentation.docx). Upload it directly to Google Drive, open with Google Docs, set General Access to **"Anyone with the link can view"**, and submit the direct file URL. *(Folder links are strictly not used).*
-
 ### 🔗 Project Quick Links
 - **Live Frontend Application**: [https://ai-copilot-for-manufacturing-startup.vercel.app](https://ai-copilot-for-manufacturing-startup.vercel.app)
 - **Backend API & Swagger Docs**: [https://manufacturing-copilot-backend.onrender.com/docs](https://manufacturing-copilot-backend.onrender.com/docs)
